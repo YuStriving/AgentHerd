@@ -166,7 +166,11 @@ export interface HerderHost {
   westock?(): { enabled: boolean; cliReady: boolean };
   /** Reads live market quotes (indices, A-shares, HK, US) from Tencent Finance (ADR 0076). */
   stockQuote?(query: string): Promise<string>;
-  /** Lines every new task gets: tools on this computer the agent can use (ADR 0059, ADR 0076). */
+  /** Whether 雪球基金 (Danjuan Funds) is connected for reading personal fund holdings (ADR 0077). */
+  danjuan?(): { enabled: boolean; ready: boolean; state: string };
+  /** Reads the owner's 雪球基金 holdings and recent N-day NAV gains/losses (ADR 0077). */
+  fundHoldings?(query?: { days?: number; account?: string }): Promise<string>;
+  /** Lines every new task gets: tools on this computer the agent can use (ADR 0059, ADR 0076, ADR 0077). */
   toolNotes?(): string[];
   /** New-work watches (ADR 0052), when GitHub is set up. */
   intakeWatches?(): IntakeWatch[];

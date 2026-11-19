@@ -57,6 +57,8 @@ import type {
   AgentCheck,
   AgentView,
   AppsView,
+  DanjuanTest,
+  DanjuanView,
   FeedSource,
   FeedView,
   HerderActivityView,
@@ -100,6 +102,7 @@ import type { AgentDef, Fetchers } from "./catalog.ts";
 import { withClaudeHome } from "./claude-home.ts";
 import { withCodexHome } from "./codex-home.ts";
 import { type CliConfig, readConfig, secretFile, writeConfig } from "./config.ts";
+import { Danjuan, type DanjuanBrowser } from "./danjuan.ts";
 import { LocalEmbedder } from "./embedder.ts";
 import { FEED_NAMES, Feeds } from "./feeds.ts";
 import { Lark } from "./lark.ts";
@@ -162,6 +165,8 @@ export interface HostOptions {
   mcpSocket?: string;
   /** Command runner for checking the `westock` CLI binary (tests). */
   westockRun?: WestockRun;
+  /** Interactive/headless browser driver for 雪球基金 (tests). */
+  danjuanBrowser?: DanjuanBrowser;
 }
 
 /** Turns 主管 › 行动记录 shows by default. */
@@ -212,6 +217,8 @@ export class Host implements HostApi {
   private readonly feedList: Feeds;
   /** 腾讯自选股 live quotes + official westock CLI (ADR 0076). */
   private readonly westockCli: Westock;
+  /** 雪球基金 (Danjuan Funds) local browser session & holdings (ADR 0077). */
+  private readonly danjuanCli: Danjuan;
   /** What the desktop pet sees of the chat (ADR 0070). */
   private readonly petFeed: PetFeed;
   /** The Herder's guess at the owner's next message, and when it came (ADR 0084). */
@@ -282,6 +289,21 @@ export class Host implements HostApi {
       },
       log: (line) => this.log(line),
     });
+    this.danjuanCli = new Danjuan({
+      home: opts.home,
+      settings: () => this.config().danjuan ?? {},
+      save: (patch) => {
+        const cur = this.config();
+        writeConfig(this.opts.home, {
+          ...cur,
+          danjuan: { ...cur.danjuan, ...patch },
+        });
+      },
+      changed: () => this.emit({ topic: "danjuan", data: this.danjuanCli.current() }),
+      ...(opts.fetch === undefined ? {} : { fetch: opts.fetch }),
+      ...(opts.danjuanBrowser === undefined ? {} : { browser: opts.danjuanBrowser }),
+      log: (line) => this.log(line),
+    });
   }
 
   lark(): Promise<LarkView> {
@@ -339,6 +361,26 @@ export class Host implements HostApi {
     return this.westockCli.test(query);
   }
 
+  danjuan(): Promise<DanjuanView> {
+    return this.danjuanCli.check();
+  }
+
+  connectDanjuan(accepted: boolean): Promise<DanjuanView> {
+    return this.danjuanCli.connect(accepted);
+  }
+
+  cancelDanjuanLogin(): Promise<DanjuanView> {
+    return this.danjuanCli.cancelLogin();
+  }
+
+  testDanjuan(): Promise<DanjuanTest> {
+    return this.danjuanCli.test();
+  }
+
+  logoutDanjuan(): Promise<DanjuanView> {
+    return this.danjuanCli.logout();
+  }
+
   /** What every new task is told about this Mac's tools (ADR 0059). */
   private toolNotes(): string[] {
     const notes: string[] = [];
@@ -346,6 +388,8 @@ export class Host implements HostApi {
     if (lark !== undefined) notes.push(lark);
     const westock = this.westockCli.note();
     if (westock !== undefined) notes.push(westock);
+    const danjuan = this.danjuanCli.note();
+    if (danjuan !== undefined) notes.push(danjuan);
     const vault = this.config().obsidianVault;
     if (vault !== undefined && vault !== "") {
       notes.push(
@@ -474,6 +518,7 @@ export class Host implements HostApi {
     void this.appList.load();
     this.socialList.start();
     void this.westockCli.check();
+    if (this.danjuanCli.enabled()) void this.danjuanCli.check();
     await this.restartHerd();
   }
 
@@ -516,6 +561,7 @@ export class Host implements HostApi {
     this.agentList.stop();
     this.socialList.stop();
     this.westockCli.stop();
+    this.danjuanCli.stop();
     this.setupRun++;
     await this.stopHerd();
   }
@@ -567,6 +613,14 @@ export class Host implements HostApi {
         }),
         quote: (query) => this.westockCli.quote(query),
       },
+      danjuan: {
+        state: () => ({
+          enabled: this.danjuanCli.enabled(),
+          ready: this.danjuanCli.ready(),
+          state: this.danjuanCli.current().state,
+        }),
+        holdings: (query) => this.danjuanCli.holdings(query),
+      },
       toolNotes: () => this.toolNotes(),
       watchesChanged: () => this.socialsChanged(),
       herderTurnAdded: () => {
@@ -594,6 +648,7 @@ export class Host implements HostApi {
                 this.socialList.tools(this.appList.appTools()),
                 this.feedList.tools(),
                 this.westockCli.tools(),
+                this.danjuanCli.tools(),
               ]),
             appNames: () => this.appList.connectedNames(),
           }),

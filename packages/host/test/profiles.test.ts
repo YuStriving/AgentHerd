@@ -8,6 +8,7 @@ import {
   commandCandidates,
   findAgent,
   localClaude,
+  nativeClaude,
   resolveProfile,
   searchPath,
 } from "../src/profiles.ts";
@@ -297,5 +298,17 @@ describe("localClaude", () => {
         "C:\\Users\\me",
       ),
     ).toBe("D:\\Local\\Programs\\claude\\claude.exe");
+  });
+
+  it("starts the exe behind npm's shim on Windows", () => {
+    // `spawn` cannot start a .cmd without a shell, so the owner's own CLI has to be the exe.
+    const dir = "C:\\Users\\me\\AppData\\Roaming\\npm";
+    const shim = `${dir}\\claude.cmd`;
+    const exe = `${dir}\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe`;
+    expect(localClaude({ PATH: dir }, has(shim, exe), "win32", "C:\\Users\\me")).toBe(exe);
+    // No exe beside the shim (another install layout): the shim is still what there is.
+    expect(localClaude({ PATH: dir }, has(shim), "win32", "C:\\Users\\me")).toBe(shim);
+    // An exe on PATH is already startable and stays as it is.
+    expect(nativeClaude("C:\\tools\\claude.exe", () => true)).toBeUndefined();
   });
 });

@@ -115,6 +115,11 @@ export interface HerdOptions {
     state(): { enabled: boolean; cliReady: boolean };
     quote(query: string): Promise<string>;
   };
+  /** 雪球基金 (Danjuan Funds) personal fund holdings and recent NAV gains (ADR 0077). */
+  danjuan?: {
+    state(): { enabled: boolean; ready: boolean; state: string };
+    holdings(query?: { days?: number; account?: string }): Promise<string>;
+  };
   /** Lines every new task gets about tools on this Mac (ADR 0059). Read on every task. */
   toolNotes?: () => string[];
   /** Minutes between two looks at those accounts (default 20, give or take 5). */

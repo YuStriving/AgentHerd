@@ -24,7 +24,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { PetRegion } from "../../../shared/bridge";
+import type { PetRegion, PetRoom } from "../../../shared/bridge";
 import { isQuiet, quietLine } from "../../../shared/pet-notify";
 import type { PetArm } from "../../../shared/pet-shortcuts";
 import { devOpen } from "../dev-bridge";
@@ -60,7 +60,22 @@ import {
   taskDots,
   taskGroups,
 } from "./pet-state";
-import { ANIMATIONS, ATLAS, CELL, type Clip, frameAt, HELLO_MS } from "./sprite";
+import {
+  ANIMATIONS,
+  ATLAS,
+  CELL,
+  type Clip,
+  clipOf,
+  FIDGET_MS,
+  type Fidget,
+  fidgetDelay,
+  frameAt,
+  HELLO_MS,
+  JUMP_MS,
+  nextFidget,
+  thinkingOf,
+  walkOf,
+} from "./sprite";
 
 const SCALE = 0.58;
 const W = Math.round(CELL.width * SCALE);
@@ -79,10 +94,16 @@ const TAB_KEY = "agentherd.pet.tab";
 /** Room on the screen before the pet has measured itself: the figure, input and margins. */
 const CHAT_CHROME = { width: 60, height: 280 };
 
+/** The whole screen: what the pet may use until main says how much room its corner leaves. */
+function screenSpace(): PetRoom {
+  return { width: window.screen.availWidth, height: window.screen.availHeight };
+}
+
 function screenRoom(): ChatSize {
+  const space = screenSpace();
   return {
-    width: window.screen.availWidth - CHAT_CHROME.width,
-    list: window.screen.availHeight - CHAT_CHROME.height,
+    width: space.width - CHAT_CHROME.width,
+    list: space.height - CHAT_CHROME.height,
   };
 }
 
@@ -158,6 +179,14 @@ export function Pet() {
   /** What the approve shortcut did, shown above the input (ADR 0080). */
   const [arm, setArm] = useState<PetArm>();
   const [hello, setHello] = useState(false);
+  /** A reply just came: one jump (ADR 0087). */
+  const [jump, setJump] = useState(false);
+  /** Walking the way the owner drags it. */
+  const [walk, setWalk] = useState<"walkRight" | "walkLeft">();
+  /** A small idle move now and then. */
+  const [fidget, setFidget] = useState<Fidget>();
+  const lastFidget = useRef<Fidget | undefined>(undefined);
+  const lastWave = useRef(0);
   const [chat, setChat] = useState<ChatSize>(() => readChatSize(localStorage.getItem(CHAT_KEY)));
   const [tab, setTabState] = useState<PetTab>(() => readTab(localStorage.getItem(TAB_KEY)));
   /** New lines that came while another page was shown. */
@@ -168,10 +197,15 @@ export function Pet() {
   openRef.current = open;
   /** The largest conversation that fits on this screen next to the rest of the pet. */
   const [room, setRoom] = useState<ChatSize>(screenRoom);
+  /** Room left of and above the figure's corner, from main; the pet never grows past it. */
+  const [space, setSpace] = useState<PetRoom>(screenSpace);
   const lastId = useRef<number | undefined>(undefined);
+  const lastTurn = useRef<number | undefined>(undefined);
   const folded = useRef(collapsed);
   const root = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ x: number; y: number; moved: boolean } | undefined>(undefined);
+  const drag = useRef<{ x: number; y: number; lastX: number; moved: boolean } | undefined>(
+    undefined,
+  );
   const figureEl = useRef<HTMLButtonElement>(null);
   const inputEl = useRef<HTMLInputElement>(null);
   const listEl = useRef<HTMLDivElement>(null);
@@ -196,7 +230,20 @@ export function Pet() {
     const apply = (next: PetView, first: boolean) => {
       setView(next);
       setPendingSays((prev) => (prev.length === 0 ? prev : remainingSays(prev, next.history)));
+      // A new line in the conversation (the owner's too, from Feishu) wakes the pet up.
+      const newest = next.history[next.history.length - 1];
+      if (!first && newest !== undefined && newest.id !== lastTurn.current) {
+        setLastActive(Date.now());
+        // The Herder answered: a little jump as the reply comes (ADR 0087).
+        if (newest.kind === "say") {
+          setJump(true);
+          setTimeout(() => setJump(false), JUMP_MS);
+        }
+      }
+      lastTurn.current = newest?.id;
       const line = next.last;
+      // Nothing said since the host started: the first line that comes is news.
+      if (first && line === undefined) lastId.current = 0;
       if (line === undefined) return;
       const fresh = !first && newLine(lastId.current, line);
       if (first || fresh || lastId.current === undefined) lastId.current = line.id;
@@ -204,6 +251,7 @@ export function Pet() {
       const t = Date.now();
       const f = flashOf(line);
       if (f !== undefined) setFlash({ mood: f, until: t + FLASH_MS });
+
       setLastActive(t);
       setNote(undefined);
       // Shown in full at once; a folded pet only counts it. A closed panel opens on the
@@ -241,6 +289,7 @@ export function Pet() {
       }
     });
     const offConnection = bridge.onConnection(setOnline);
+    const offRoom = bridge.pet?.onRoom?.(setSpace);
     // A notification or the menu bar was clicked: the panel opens on that page (ADR 0079).
     const offShow = bridge.pet?.onShow?.((next) => {
       setCollapsed(false);
@@ -257,6 +306,7 @@ export function Pet() {
       offEvent();
       offConnection();
       offShow?.();
+      offRoom?.();
       clearInterval(tick);
     };
   }, []);
@@ -291,8 +341,35 @@ export function Pet() {
     if (open) setUnread(0);
   }, [open]);
 
+  // The Herder is working on a reply: the pet reads, with a "…" bubble (ADR 0087).
+  const thinking = thinkingOf(view.history, remainingSays(pendingSays, view.history).length, now);
+
+  // Now and then a calm pet waves, jumps or reads a little; never the same move twice running.
+  const calm = mood === "resting" && !thinking && !collapsed;
+  useEffect(() => {
+    if (!calm) {
+      setFidget(undefined);
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout>;
+    const wait = () => {
+      timer = setTimeout(play, fidgetDelay(Math.random()));
+    };
+    const play = () => {
+      const f = nextFidget(lastFidget.current, Math.random());
+      lastFidget.current = f;
+      setFidget(f);
+      timer = setTimeout(() => {
+        setFidget(undefined);
+        wait();
+      }, FIDGET_MS[f]);
+    };
+    wait();
+    return () => clearTimeout(timer);
+  }, [calm]);
+
   // Plays the clip's frames on the figure. Writes the style directly: no React render per frame.
-  const clip: Clip = hello ? "hello" : mood;
+  const clip: Clip = clipOf({ mood, walk, hello, jump, thinking, fidget });
   useEffect(() => {
     if (collapsed) return;
     const animation = ANIMATIONS[clip];
@@ -361,8 +438,8 @@ export function Pet() {
     const l = listEl.current;
     if (!shown || r === null || p === null || l === null) return;
     const next = {
-      width: window.screen.availWidth - (r.offsetWidth - p.offsetWidth),
-      list: window.screen.availHeight - (r.offsetHeight - l.offsetHeight),
+      width: space.width - (r.offsetWidth - p.offsetWidth),
+      list: space.height - (r.offsetHeight - l.offsetHeight),
     };
     setRoom((current) =>
       current.width === next.width && current.list === next.list ? current : next,
@@ -419,7 +496,7 @@ export function Pet() {
     } catch {
       // a synthetic event without a live pointer: no capture needed
     }
-    drag.current = { x: e.screenX, y: e.screenY, moved: false };
+    drag.current = { x: e.screenX, y: e.screenY, lastX: e.screenX, moved: false };
     bridge.pet?.dragStart();
   };
   const onPointerMove = (e: PointerEvent<HTMLElement>) => {
@@ -428,11 +505,18 @@ export function Pet() {
     const dx = e.screenX - d.x;
     const dy = e.screenY - d.y;
     if (!d.moved && Math.abs(dx) + Math.abs(dy) >= 4) d.moved = true;
+    // Dragged sideways, it walks that way (ADR 0087).
+    if (d.moved) {
+      const step = e.screenX - d.lastX;
+      d.lastX = e.screenX;
+      setWalk((w) => walkOf(w, step));
+    }
     bridge.pet?.dragMove(dx, dy);
   };
   const finishDrag = (click?: () => void) => {
     const d = drag.current;
     drag.current = undefined;
+    setWalk(undefined);
     if (d === undefined) return;
     const localMoved = d.moved;
     void Promise.resolve(bridge.pet?.dragEnd()).then((hostMoved) => {
@@ -441,6 +525,15 @@ export function Pet() {
   };
 
   const close = () => setOpen(false);
+
+  // Pointed at, it waves; not again within ten seconds.
+  const onFigureEnter = () => {
+    const t = Date.now();
+    if (drag.current !== undefined || t - lastWave.current < 10_000) return;
+    lastWave.current = t;
+    setHello(true);
+    setTimeout(() => setHello(false), HELLO_MS);
+  };
 
   const onFigureClick = () => {
     touch();
@@ -660,6 +753,7 @@ export function Pet() {
           onMouseLeave={() => setHover(false)}
           title={quiet === undefined ? "展开" : `展开（${quiet}）`}
           onPointerDown={onPointerDown}
+          onPointerEnter={onFigureEnter}
           onPointerMove={onPointerMove}
           onPointerUp={() => finishDrag(() => fold(false))}
           onPointerCancel={() => finishDrag()}
@@ -1000,6 +1094,13 @@ export function Pet() {
         {quiet !== undefined && (
           <span className="pet-moon" title={quiet} role="img" aria-label={quiet}>
             🌙
+          </span>
+        )}
+        {thinking && clip === "thinking" && (
+          <span className="pet-think" title="主管在想…" role="img" aria-label="主管在想">
+            <i />
+            <i />
+            <i />
           </span>
         )}
         {mood === "sleeping" && (

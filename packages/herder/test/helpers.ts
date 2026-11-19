@@ -182,6 +182,8 @@ export function fakeHost(
     feed?: FeedItem[];
     /** Tencent WeStock mock state and quote response (ADR 0076). */
     westock?: { enabled: boolean; cliReady: boolean; quote?: string };
+    /** 雪球基金 mock state and holdings summary (ADR 0077). */
+    danjuan?: { enabled: boolean; ready: boolean; state: string; report?: string };
     /** Where small news goes, kept in memory (ADR 0061). */
     notices?: Record<NoticeKind, NoticeLevel>;
     /** What each task's agent was sent and wrote, by task id (task_read, ADR 0062). */
@@ -285,6 +287,20 @@ export function fakeHost(
             const reads = (rec.state.get("quotes") as unknown[] | undefined) ?? [];
             rec.state.set("quotes", [...reads, query]);
             return opts.westock?.quote ?? `mock quote for ${query}`;
+          },
+        }),
+    ...(opts.danjuan === undefined
+      ? {}
+      : {
+          danjuan: () => ({
+            enabled: opts.danjuan?.enabled ?? true,
+            ready: opts.danjuan?.ready ?? false,
+            state: opts.danjuan?.state ?? "off",
+          }),
+          fundHoldings: async (query?: { days?: number; account?: string }) => {
+            const reads = (rec.state.get("fundHoldings") as unknown[] | undefined) ?? [];
+            rec.state.set("fundHoldings", [...reads, query ?? {}]);
+            return opts.danjuan?.report ?? "mock fund holdings report";
           },
         }),
     getState: <T>(key: string) => rec.state.get(key) as T | undefined,

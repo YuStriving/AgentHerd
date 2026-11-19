@@ -43,6 +43,11 @@
    edge of its screen, the pet tucks there: only a 44 px strip of the figure shows. It comes out
    while the cursor is on it or its panel is open, and goes back 0.6 s after the cursor leaves.
    Dragging it away untucks it. Where and whether it is tucked is kept with its position.
+   Changed 2026-11-20 (#135, #144): while dragged, the whole pet stays inside the work area of the
+   screen under the pointer, on macOS and Windows (owner: 「Windows 上拖动桌宠时不让它拖出屏幕
+   这个你看看mac也做一下」). It slides along an edge and moves back at once on reversal. Since the
+   figure can no longer be dropped past an edge, a drop tucks when the pointer kept pushing past the
+   left or right edge by more than a third of the figure.
 
 ## Alternatives
 

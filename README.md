@@ -51,7 +51,7 @@ English · [简体中文](README.zh-CN.md)
   schedule, and missed runs happen once when your machine wakes.
 - **Memory that stays useful.** The whole conversation is kept, and the Herder folds old parts
   itself. It learns a lesson only when a task went wrong, and finds past results in task records.
-- **A desktop pet.** 大肥鱼 or Claude 娘 floats on your desktop, says what AgentHerd just told you
+- **A desktop pet.** 大肥鱼 or Claude 娘 floats on your desktop (she reads while the Herder thinks, jumps when it answers and walks when you drag her), says what AgentHerd just told you
   in Feishu, cheers when a task is done, and waits with 同意 / 拒绝 when something needs you. Click
   her to talk to the Herder: replies in Markdown; tables, numbers, steps, links and choices to tap
   drawn as components (in Feishu too); pictures a task saves for you (a QR code to scan, a

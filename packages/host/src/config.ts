@@ -29,6 +29,8 @@ export interface CliConfig {
   feedsOff?: ("github-trending" | "hacker-news" | "arxiv")[];
   /** Turn off built-in Tencent WeStock live quotes in 应用连接 (ADR 0076); on unless true. */
   westockOff?: boolean;
+  /** 雪球基金 (Danjuan Funds) local browser session settings (ADR 0077). */
+  danjuan?: { enabled?: boolean; acceptedAt?: string };
   /** The owner's Obsidian vault, told to every new task (ADR 0059). */
   obsidianVault?: string;
   /** The desktop pet (ADR 0070); DEFAULT_PET where missing. */

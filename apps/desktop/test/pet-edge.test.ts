@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { EDGE_GAP, edgeOf, peekRight, TUCK_SHOW, tuckedX } from "../src/shared/pet-edge.ts";
+import {
+  EDGE_GAP,
+  edgeOf,
+  fitDrag,
+  peekRight,
+  pushedEdge,
+  TUCK_SHOW,
+  tuckedX,
+} from "../src/shared/pet-edge.ts";
 
 const area = { x: 0, y: 25, width: 1512, height: 920 };
 // The figure inside a 150-wide window, at its right.
@@ -26,4 +34,25 @@ describe("tucking the pet at a screen edge (ADR 0080)", () => {
     const rl = peekRight("left", stage, 150, area);
     expect(rl - 150 + stage.x).toBe(area.x + EDGE_GAP);
   });
+});
+
+it("keeps a drag inside each corner, on every system", () => {
+  for (const width of [72, 150]) {
+    const pet = { width, height: width };
+    for (const x of [-2000, 3000]) {
+      for (const y of [-2000, 3000]) {
+        const placed = fitDrag({ x, y, ...pet }, area);
+        expect(placed).toEqual({ x: x < 0 ? 0 : area.width - width, y: y < 0 ? 25 : 945 - width });
+      }
+    }
+    const leftDisplay = { ...area, x: -area.width };
+    expect(fitDrag({ ...pet, x: -1, y: 100 }, leftDisplay)).toEqual({ x: -width, y: 100 });
+  }
+});
+
+it("tucks a drop at the edge the pointer kept pushing past by a third of the figure", () => {
+  expect(pushedEdge(40, 111)).toBe("right");
+  expect(pushedEdge(-40, 111)).toBe("left");
+  expect(pushedEdge(30, 111)).toBeUndefined();
+  expect(pushedEdge(0, 111)).toBeUndefined();
 });

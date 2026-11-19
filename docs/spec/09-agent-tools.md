@@ -5,7 +5,8 @@ Applied ADRs: [0019](../adr/0019-relay-verbatim-board-and-reports.md),
 [0056](../adr/0056-leaving-the-mac-asks-and-questions-close.md),
 [0041](../adr/0041-agent-tools-through-a-local-mcp-gateway.md),
 [0060](../adr/0060-pi-tools-through-the-mcp-gateway.md),
-[0076](../adr/0076-westock-market-quotes-and-research-cli.md).
+[0076](../adr/0076-westock-market-quotes-and-research-cli.md),
+[0077](../adr/0077-xueqiu-danjuan-fund-holdings.md).
 
 AgentHerd gives every task one MCP server, `agentherd`. Through it the agent reports progress
 (`herd_report`) and, when the owner has connected apps, uses them (Gmail, Slack, GitHub …)
@@ -237,6 +238,18 @@ from 应用连接, the host verifies the download from `stockbuddy.qq.com` again
 digest (`packages/host/src/westock.ts`), places the executable under `<home>/bin`, prepends that
 folder to task `PATH`, and describes `westock` availability to new tasks via `toolNotes()`. Removing
 the managed CLI deletes only `<home>/bin/westock(.exe)`.
+
+## 3e. 雪球基金 personal fund holdings (ADR 0077)
+
+**Local interactive login.** Under 应用连接 → 行情与投研 → 雪球基金, the owner accepts the read-only
+notice (`connectDanjuan(true)`) and logs in inside an isolated Chrome/Edge window (`<home>/danjuan/profile`).
+No credentials or verification codes are read or stored by AgentHerd.
+
+**Read-only `DANJUAN_HOLDINGS` and `fund_holdings`.** While signed in, the Herder gets `fund_holdings`
+and tasks get the read-only `DANJUAN_HOLDINGS` MCP tool (beside Composio, news, and `WESTOCK_QUOTE`).
+Holdings from `danjuanfunds.com` are enriched with recent N trading days of public NAV history
+(`djapi/fund/nav/history`) to compute compounded per-fund returns and static estimated daily P&L. No
+trade/subscription/redemption endpoints exist.
 
 ## 4. Failure behavior
 

@@ -38,3 +38,21 @@ export function tuckedX(edge: Edge, stage: Rect, area: Rect): number {
   if (edge === "right") return area.x + area.width - TUCK_SHOW - stage.x;
   return area.x + TUCK_SHOW - stage.x - stage.width;
 }
+
+/** Keeps a dragged pet inside the work area of the screen under the pointer, on every system. */
+export function fitDrag(window: Rect, area: Rect) {
+  return {
+    x: Math.max(area.x, Math.min(window.x, area.x + area.width - window.width)),
+    y: Math.max(area.y, Math.min(window.y, area.y + area.height - window.height)),
+  };
+}
+
+/**
+ * The edge a drop tucks at when the pointer kept pushing past it: the pet itself stays on the
+ * screen while dragged, so the push stands for "more than a third of the figure past the edge".
+ */
+export function pushedEdge(push: number, figureWidth: number): Edge | undefined {
+  if (push > figureWidth / 3) return "right";
+  if (push < -figureWidth / 3) return "left";
+  return undefined;
+}

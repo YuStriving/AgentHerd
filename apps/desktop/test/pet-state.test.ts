@@ -41,7 +41,19 @@ import {
   taskGroups,
   trailingLine,
 } from "../src/renderer/src/pet/pet-state";
-import { ANIMATIONS, ATLAS, frameAt, HELLO_MS } from "../src/renderer/src/pet/sprite";
+import {
+  ANIMATIONS,
+  ATLAS,
+  clipOf,
+  FIDGET_EVERY_MS,
+  fidgetDelay,
+  frameAt,
+  HELLO_MS,
+  nextFidget,
+  THINK_MAX_MS,
+  thinkingOf,
+  walkOf,
+} from "../src/renderer/src/pet/sprite";
 import { hitPetRegion } from "../src/shared/bridge";
 
 const IDLE: PetView = { connected: true, pending: [] };
@@ -143,14 +155,68 @@ describe("pet frames", () => {
     });
   });
 
-  it("gives every clip its own row inside the atlas", () => {
-    const rows = Object.values(ANIMATIONS).map((a) => a.row);
+  it("gives every clip its own row inside the atlas; a jump replays the cheer once", () => {
+    const { jump, ...own } = ANIMATIONS;
+    const rows = Object.values(own).map((a) => a.row);
     expect(new Set(rows).size).toBe(rows.length);
+    expect(jump.row).toBe(ANIMATIONS.celebrate.row);
+    expect(jump.loop).toBe(false);
+    expect(ATLAS.rows).toBe(10);
     for (const a of Object.values(ANIMATIONS)) {
       expect(a.row).toBeLessThan(ATLAS.rows);
       expect(a.durations.length).toBeLessThanOrEqual(ATLAS.columns);
     }
     expect(HELLO_MS).toBe(700);
+  });
+});
+
+describe("more moves (ADR 0087)", () => {
+  const at = (msAgo: number) => new Date(Date.parse("2026-11-20T02:00:00Z") - msAgo).toISOString();
+  const now = Date.parse("2026-11-20T02:00:00Z");
+
+  it("reads while the Herder works on the owner's message, for a few minutes at most", () => {
+    expect(thinkingOf([], 1, now)).toBe(true);
+    expect(thinkingOf([{ kind: "owner", at: at(5_000) }], 0, now)).toBe(true);
+    expect(thinkingOf([{ kind: "owner", at: at(THINK_MAX_MS + 1) }], 0, now)).toBe(false);
+    expect(
+      thinkingOf(
+        [
+          { kind: "owner", at: at(9_000) },
+          { kind: "say", at: at(1_000) },
+        ],
+        0,
+        now,
+      ),
+    ).toBe(false);
+    expect(thinkingOf([], 0, now)).toBe(false);
+  });
+
+  it("walks the way it is dragged and keeps that way while moved up or down", () => {
+    expect(walkOf(undefined, 5)).toBe("walkRight");
+    expect(walkOf("walkRight", -3)).toBe("walkLeft");
+    expect(walkOf("walkLeft", 0)).toBe("walkLeft");
+    expect(walkOf(undefined, 1)).toBeUndefined();
+  });
+
+  it("fidgets every 20 to 40 seconds, never the same move twice running", () => {
+    expect(fidgetDelay(0)).toBe(FIDGET_EVERY_MS.min);
+    expect(fidgetDelay(0.999)).toBeLessThan(FIDGET_EVERY_MS.max);
+    for (const r of [0, 0.4, 0.99]) {
+      expect(nextFidget("hello", r)).not.toBe("hello");
+      expect(nextFidget("jump", r)).not.toBe("jump");
+    }
+  });
+
+  it("plays the strongest move: walking, a wave, a jump, the mood, reading, a fidget", () => {
+    expect(clipOf({ mood: "waiting", walk: "walkLeft", hello: true })).toBe("walkLeft");
+    expect(clipOf({ mood: "working", hello: true, jump: true })).toBe("hello");
+    expect(clipOf({ mood: "resting", jump: true, thinking: true })).toBe("jump");
+    expect(clipOf({ mood: "waiting", thinking: true })).toBe("waiting");
+    expect(clipOf({ mood: "working", thinking: true })).toBe("thinking");
+    expect(clipOf({ mood: "sleeping", thinking: true })).toBe("thinking");
+    expect(clipOf({ mood: "resting", fidget: "jump" })).toBe("jump");
+    expect(clipOf({ mood: "working", fidget: "jump" })).toBe("working");
+    expect(clipOf({ mood: "resting" })).toBe("resting");
   });
 });
 

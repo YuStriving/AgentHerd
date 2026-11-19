@@ -799,7 +799,8 @@ export class Herder implements HerderPort {
         m.role === "toolResult" &&
         !CONTEXT_TOOL_NAMES.has(m.toolName) &&
         !LOOKUP_TOOL_NAMES.has(m.toolName) &&
-        m.toolName !== "stock_quote",
+        m.toolName !== "stock_quote" &&
+        m.toolName !== "fund_holdings",
     );
     const lead = leadingSystem(this.agent.state.messages);
     this.agent.state.messages = this.agent.state.messages.slice(0, before);

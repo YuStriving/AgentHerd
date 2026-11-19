@@ -493,6 +493,30 @@ export interface WestockTest {
   westock: WestockView;
 }
 
+/** 雪球基金 (Danjuan Funds) login & session state (ADR 0077). */
+export type DanjuanState = "off" | "signing-in" | "starting" | "ready" | "signed-out" | "failed";
+
+/** 雪球基金 connection state in 设置 › 应用连接 › 行情与投研 (ADR 0077). */
+export interface DanjuanView {
+  /** True when Chrome or Edge is available on this computer for isolated session calls. */
+  available: boolean;
+  /** True once the owner accepted the read-only local-session risk notice. */
+  accepted: boolean;
+  enabled: boolean;
+  state: DanjuanState;
+  account?: string;
+  problem?: string;
+  checkedAt?: string;
+}
+
+/** What 雪球基金 › 测试连接 found. */
+export interface DanjuanTest {
+  ok: boolean;
+  message: string;
+  sample?: string;
+  danjuan: DanjuanView;
+}
+
 /** Everything the host offers. Each method is one request on the socket. */
 export type Tier = "strong" | "balanced" | "fast";
 
@@ -697,6 +721,11 @@ export interface HostApi {
   installWestock(): Promise<WestockView>;
   removeWestock(): Promise<WestockView>;
   testWestock(query?: string): Promise<WestockTest>;
+  danjuan(): Promise<DanjuanView>;
+  connectDanjuan(accepted: boolean): Promise<DanjuanView>;
+  cancelDanjuanLogin(): Promise<DanjuanView>;
+  testDanjuan(): Promise<DanjuanTest>;
+  logoutDanjuan(): Promise<DanjuanView>;
   /** What the desktop pet shows (ADR 0070). */
   pet(): PetView;
   /**
@@ -773,6 +802,11 @@ export const HOST_METHODS: readonly HostMethod[] = [
   "installWestock",
   "removeWestock",
   "testWestock",
+  "danjuan",
+  "connectDanjuan",
+  "cancelDanjuanLogin",
+  "testDanjuan",
+  "logoutDanjuan",
   "pet",
   "petSay",
   "petPress",
@@ -790,6 +824,7 @@ export type HostEvent =
   | { topic: "watches"; data: WatchView[] }
   | { topic: "lark"; data: LarkView }
   | { topic: "westock"; data: WestockView }
+  | { topic: "danjuan"; data: DanjuanView }
   | { topic: "login"; data: LoginView }
   | { topic: "pet"; data: PetView };
 

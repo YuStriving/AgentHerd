@@ -293,6 +293,13 @@ export class Herd {
             stockQuote: (query: string) =>
               (this.opts.westock as NonNullable<HerdOptions["westock"]>).quote(query),
           }),
+      ...(this.opts.danjuan === undefined
+        ? {}
+        : {
+            danjuan: () => (this.opts.danjuan as NonNullable<HerdOptions["danjuan"]>).state(),
+            fundHoldings: (query?: { days?: number; account?: string }) =>
+              (this.opts.danjuan as NonNullable<HerdOptions["danjuan"]>).holdings(query),
+          }),
       ...(this.mail === undefined
         ? {}
         : {

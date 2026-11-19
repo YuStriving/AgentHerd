@@ -159,7 +159,9 @@ a claude.ai login ([ADR 0069](../adr/0069-claude-code-the-owners-own-or-download
   `%USERPROFILE%\.local\bin\claude.exe`, `%USERPROFILE%\.claude\local\claude.exe`,
   `%LOCALAPPDATA%\Programs\claude\claude.exe`)
   (`localClaude` in `packages/host/src/profiles.ts`); it reaches the adapter as
-  `CLAUDE_CODE_EXECUTABLE`. Without one, the adapter's own build is used.
+  `CLAUDE_CODE_EXECUTABLE`. Without one, the adapter's own build is used. On Windows npm puts a
+  `claude.cmd` on `PATH`, which `spawn` refuses without a shell, so the `claude.exe` beside it is
+  what is used when it is there (`nativeClaude`, the same shape as `nativeLarkCli`).
 - **Download only when asked.** On the **Agent** page Claude Code shows 没有 with 下载 until the
   adapter is in `<home>/runtimes/claude/<version>/`. With the owner's `claude`, 下载 fetches only
   the adapter (`npm --omit=optional`, a few MB); without it, also Anthropic's platform build

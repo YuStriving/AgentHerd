@@ -252,8 +252,27 @@ export function builtinProfile(
 export const CLAUDE_EXECUTABLE_ENV = "CLAUDE_CODE_EXECUTABLE";
 
 /**
+ * On Windows, the claude.exe behind npm's `claude.cmd`. `spawn` cannot start a `.cmd` without a
+ * shell (Node 20.12 refuses it: spawn EINVAL), and that is what the Agent SDK does with the path
+ * it is given. Started directly, the exe is fine, so hand it that when it exists.
+ */
+export function nativeClaude(shim: string, exists: (p: string) => boolean): string | undefined {
+  if (!/\.(cmd|ps1|bat)$/i.test(shim) && win32.extname(shim) !== "") return undefined;
+  const exe = win32.join(
+    win32.dirname(shim),
+    "node_modules",
+    "@anthropic-ai",
+    "claude-code",
+    "bin",
+    "claude.exe",
+  );
+  return exists(exe) ? exe : undefined;
+}
+
+/**
  * The owner's own Claude Code CLI (ADR 0069): `AGENTHERD_CLAUDE_CLI`, `claude` on PATH, or where
- * Anthropic's installers put it (a GUI app has a short PATH).
+ * Anthropic's installers put it (a GUI app has a short PATH). On Windows the PATH entry is npm's
+ * shim; the exe behind it is the one that can be started.
  */
 export function localClaude(
   env: NodeJS.ProcessEnv = process.env,
@@ -264,7 +283,9 @@ export function localClaude(
   const named = envValue(env, "AGENTHERD_CLAUDE_CLI");
   if (named !== undefined && named !== "") return named;
   const onSystem = onPath(["claude"], envValue(env, "PATH"), exists, platform);
-  if (onSystem !== undefined) return onSystem;
+  if (onSystem !== undefined) {
+    return platform === "win32" ? (nativeClaude(onSystem, exists) ?? onSystem) : onSystem;
+  }
   if (platform === "win32") {
     const localAppData = envValue(env, "LOCALAPPDATA") ?? win32.join(home, "AppData", "Local");
     return [

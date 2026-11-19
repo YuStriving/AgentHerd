@@ -1,0 +1,102 @@
+name: Bug 报告 / Bug report
+description: 报错、卡住、结果不对 / Something fails, hangs or gives a wrong result
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先搜索是否已有相同的 issue。中文或英文都可以，一屏写完最好。
+        贴日志、截图前删掉 API Key、App Secret、Token 和个人信息。安全问题不要公开提交，请走 [私密报告](https://github.com/zszz3/AgentHerd/security/advisories/new)。
+
+        Search existing issues first. Write in Chinese or English; one screen is enough.
+        Remove API keys, App Secrets, tokens and personal data from logs and screenshots. Do not file security problems in public; use a [private report](https://github.com/zszz3/AgentHerd/security/advisories/new).
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本或 commit / Version or commit
+      description: 从源码运行时填 `git rev-parse --short HEAD` / From source, paste `git rev-parse --short HEAD`
+      placeholder: 54d642d
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 系统 / OS
+      options:
+        - macOS
+        - Windows
+        - 其他 / Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 出问题的地方 / Where it happens
+      multiple: true
+      options:
+        - 飞书 / Feishu
+        - 桌宠 / Pet
+        - 桌面 App / Desktop app
+        - 主管 / Herder
+        - Agent 任务 / Agent task (Pi, Codex, Claude Code)
+        - 规则与审批 / Rules and approvals
+        - 命令行 / CLI
+        - 其他 / Other
+    validations:
+      required: true
+
+  - type: input
+    id: agent
+    attributes:
+      label: Agent 和模型（可选）/ Agent and model (optional)
+      placeholder: Pi 1.5.0 / deepseek-flash
+    validations:
+      required: false
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么 / What happened
+      description: 一两句话说清现象 / One or two sentences
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      placeholder: |
+        1. 在飞书里发 … / Send … in Feishu
+        2. …
+        3. 看到 … / See …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果 / Expected result
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志（可选）/ Logs (optional)
+      description: "`~/.agentherd/logs/` 里的相关几行，去掉密钥 / The relevant lines from `~/.agentherd/logs/`, secrets removed"
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: verified
+    attributes:
+      label: 验证到哪一步（可选）/ What you verified (optional)
+      description: 哪些确认过，哪些没确认 / What you confirmed and what you did not
+      placeholder: 解析器层面确认；桌宠和飞书渲染未确认 / Confirmed in the parser; pet and Feishu rendering not checked
+    validations:
+      required: false

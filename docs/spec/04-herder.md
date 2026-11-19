@@ -3,7 +3,8 @@
 Applied ADRs: [0003](../adr/0003-herder-on-pi-agent-core.md), [0007](../adr/0007-tiered-decisions-fail-open-to-human.md),
 [0008](../adr/0008-observe-first-rollout.md), [0012](../adr/0012-channel-is-the-only-decision-surface.md),
 [0018](../adr/0018-one-herder-as-secretary-separate-approvals.md), [0019](../adr/0019-relay-verbatim-board-and-reports.md),
-[0076](../adr/0076-westock-market-quotes-and-research-cli.md).
+[0076](../adr/0076-westock-market-quotes-and-research-cli.md),
+[0077](../adr/0077-xueqiu-danjuan-fund-holdings.md).
 
 AgentHerd has three roles:
 
@@ -109,8 +110,8 @@ The Herder may add, never rewrite.
 | Read | `task_get`, `task_list`, `session_transcript`, `decisions_list`, `read`, `grep`, `list`, `git_log`, `git_diff` (read tools only inside known project directories) |
 | Schedules | `schedule_add(about, prompt, kind, at?, days?, hours?)`, `schedule_change(schedule, …, paused?)`, `schedule_remove(schedule)`: what the Herder does at set times, only when the owner asks ([ADR 0055](../adr/0055-schedules-the-herder-makes.md)) |
 | Context | `compress`, `decompress`, `search_context`, `acp_status`: fold finished parts of its own conversation, find and show them again ([ADR 0045](../adr/0045-herder-context-folded-by-the-model.md)) |
-| Web | `web_search(query, source?, limit?)` (web results from DuckDuckGo, then Bing; `source: github` lists repositories), `web_read(url, maxChars?)` (a public page as text; a GitHub repository's facts from the API): read-only, public hosts only, for quick answers without a task ([ADR 0071](../adr/0071-look-things-up-and-keep-the-board-short.md)) |
-| Market | `stock_quote(query)` (live A-share, HK, US, ETF and broad index quotes from Tencent Finance when 腾讯自选股 is on; read-only, zero login, objective reference only; [ADR 0076](../adr/0076-westock-market-quotes-and-research-cli.md)) |
+| Web | `web_search(query, source?, limit?)` (web results from DuckDuckGo, then Bing; `source: github` lists repositories, trying fewer words when all of them find nothing, [ADR 0085](../adr/0085-asked-for-projects-the-herder-names-real-ones.md); `source: research` asks the web, GitHub and Hacker News at once, at most 8 s, merged by link, [ADR 0086](../adr/0086-research-searches-several-sources-at-once.md)), `web_read(url, maxChars?)` (a public page as text; a GitHub repository's facts from the API): read-only, public hosts only, for quick answers without a task ([ADR 0071](../adr/0071-look-things-up-and-keep-the-board-short.md)) |
+| Market | `stock_quote(query)` (live A-share, HK, US, ETF and broad index quotes from Tencent Finance when 腾讯自选股 is on; read-only, zero login, objective reference only; [ADR 0076](../adr/0076-westock-market-quotes-and-research-cli.md)), `fund_holdings(days?, account?)` (personal 雪球基金 holdings and recent N-day NAV gains when signed in; read-only, [ADR 0077](../adr/0077-xueqiu-danjuan-fund-holdings.md)) |
 
 There is no tool to approve an item, write files or run shell commands. Every Herder tool call
 is checked by the guard list first; a match goes to the owner instead of running. Every call is
@@ -425,12 +426,14 @@ New GitHub work is offered only when the owner asks for it ([ADR 0052](../adr/00
   likes, saves and new followers are never told. `social_watch` turns this off or on when the
   owner asks; `session_list` shows platforms. Agents use the account through `XIAOHONGSHU_` and
   `ZHIHU_` tools; writes ask (ADR 0056).
-- **News and this Mac's tools** (ADR 0059, ADR 0076). `feed_read` reads GitHub Trending, Hacker News or
+- **News and this Mac's tools** (ADR 0059, ADR 0076, ADR 0077). `feed_read` reads GitHub Trending, Hacker News or
   arXiv; with `told: true` (a digest, often a schedule) the items are recorded and later reads
   mark them `[told before]`, which the Herder leaves out. `stock_quote` reads live stock and index
-  quotes when 腾讯自选股 is enabled. `session_start` adds what the host says the computer offers
-  (lark-cli signed in as the owner, the Obsidian vault, and whether Tencent WeStock live quotes or
-  the `westock` research CLI are available) to every new task's context.
+  quotes when 腾讯自选股 is enabled. `fund_holdings` reads personal 雪球基金 holdings and recent N-day
+  returns when connected. `session_start` adds what the host says the computer offers
+  (lark-cli signed in as the owner, the Obsidian vault, whether Tencent WeStock live quotes or the
+  `westock` research CLI are available, and 雪球基金 read-only status when connected) to every new
+  task's context.
 - **Watches list.** 定时任务 → 在盯的 lists pull requests, mail watches, new-work watches and
   platform kinds; pausing keeps a watch without looking (`paused` in its row), removing deletes it.
 

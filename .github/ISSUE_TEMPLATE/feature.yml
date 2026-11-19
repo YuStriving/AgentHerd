@@ -1,0 +1,48 @@
+name: 功能建议 / Feature request
+description: 想要一个新能力，或想改一个行为 / A new capability or a change in behavior
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先说清要解决的问题，再说想要的做法。中文或英文都可以，一屏写完最好。
+        AgentHerd 不是 Coding Agent 本身，也不替代 Agent 的界面，范围见 [产品说明](https://github.com/zszz3/AgentHerd/blob/main/docs/spec/01-product.md)。
+
+        State the problem first, then the idea. Chinese or English; one screen is enough.
+        AgentHerd is not a coding agent and does not replace the agents' own UIs; see the [product spec](https://github.com/zszz3/AgentHerd/blob/main/docs/spec/01-product.md) for scope.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 现在卡在哪 / The problem
+      description: 你想做什么，现在只能怎么绕 / What you want to do and how you work around it now
+      placeholder: 我想 …，但现在只能 … / I want to …, but now I have to …
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: 想要的做法（可选）/ Proposed behavior (optional)
+      description: 用户看到的行为，不用写实现 / What the owner would see, not the implementation
+    validations:
+      required: false
+
+  - type: input
+    id: spec
+    attributes:
+      label: 相关的 spec 或 ADR（可选）/ Related spec page or ADR (optional)
+      placeholder: docs/spec/04-herder.md, ADR 0070
+    validations:
+      required: false
+
+  - type: dropdown
+    id: implement
+    attributes:
+      label: 你愿意自己实现吗 / Will you implement it?
+      options:
+        - 不 / No
+        - 愿意，先等维护者确认 / Yes, after a maintainer agrees
+    validations:
+      required: true

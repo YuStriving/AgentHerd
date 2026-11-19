@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全问题 / Security problem
+    url: https://github.com/zszz3/AgentHerd/security/advisories/new
+    about: 私密报告，不要公开提交 / Report privately, not in a public issue
+  - name: 文档 / Docs
+    url: https://github.com/zszz3/AgentHerd/blob/main/docs/README.md
+    about: 产品、架构、主管、渠道和安全的说明 / Product, architecture, Herder, channels and security

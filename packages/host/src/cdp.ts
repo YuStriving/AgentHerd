@@ -216,7 +216,17 @@ export class CdpPage {
   }
 }
 
-/** A headless Chrome with its own profile folder. */
+/** Options when launching the isolated Chrome/Edge process (ADR 0058, ADR 0077). */
+export interface ChromeStartOptions {
+  /** Default true (`--headless=new`). Set false for interactive login windows. */
+  headless?: boolean;
+  /** Initial URL (or `--app=<url>` when `headless: false`). */
+  url?: string;
+  /** Chrome `--window-size` argument. */
+  windowSize?: string;
+}
+
+/** A headless or app-window Chrome with its own profile folder. */
 export class Chrome {
   private child: ChildProcess | undefined;
   private port = 0;
@@ -233,27 +243,35 @@ export class Chrome {
     return this.child !== undefined;
   }
 
-  async start(): Promise<void> {
+  async start(opts?: ChromeStartOptions): Promise<void> {
     if (this.child !== undefined) return;
     const bin = findChrome();
-    if (bin === undefined) throw new Error("需要先安装 Google Chrome");
+    if (bin === undefined) throw new Error("需要先安装 Google Chrome 或 Microsoft Edge");
     mkdirSync(this.profile, { recursive: true, mode: 0o700 });
     this.port = await freePort();
-    const child = spawn(
-      bin,
-      [
-        "--headless=new",
-        "--disable-gpu",
-        "--no-first-run",
-        "--no-default-browser-check",
-        `--user-data-dir=${this.profile}`,
-        `--remote-debugging-port=${this.port}`,
-        "--remote-debugging-address=127.0.0.1",
-        "--window-size=1280,900",
-        "about:blank",
-      ],
-      { stdio: "ignore", windowsHide: true },
-    );
+    const headless = opts?.headless !== false;
+    const args = headless
+      ? [
+          "--headless=new",
+          "--disable-gpu",
+          "--no-first-run",
+          "--no-default-browser-check",
+          `--user-data-dir=${this.profile}`,
+          `--remote-debugging-port=${this.port}`,
+          "--remote-debugging-address=127.0.0.1",
+          `--window-size=${opts?.windowSize ?? "1280,900"}`,
+          opts?.url ?? "about:blank",
+        ]
+      : [
+          "--no-first-run",
+          "--no-default-browser-check",
+          `--user-data-dir=${this.profile}`,
+          `--remote-debugging-port=${this.port}`,
+          "--remote-debugging-address=127.0.0.1",
+          `--window-size=${opts?.windowSize ?? "520,740"}`,
+          `--app=${opts?.url ?? "about:blank"}`,
+        ];
+    const child = spawn(bin, args, { stdio: "ignore", windowsHide: headless });
     this.child = child;
     child.on("exit", (code) => {
       if (this.child !== child) return;
@@ -272,6 +290,41 @@ export class Chrome {
     }
     this.stop();
     throw new Error("Chrome 没有启动起来");
+  }
+
+  /** Attaches to an existing page tab (useful when started with a URL / `--app`), or opens one. */
+  async firstPage(): Promise<CdpPage> {
+    const until = Date.now() + 5_000;
+    while (Date.now() < until && this.child !== undefined) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${this.port}/json/list`);
+        if (res.ok) {
+          const targets = (await res.json()) as {
+            id?: string;
+            type?: string;
+            webSocketDebuggerUrl?: string;
+          }[];
+          const found = targets.find(
+            (t) => t.type === "page" && t.id !== undefined && t.webSocketDebuggerUrl !== undefined,
+          );
+          if (found?.id !== undefined && found.webSocketDebuggerUrl !== undefined) {
+            const ws = new WebSocket(found.webSocketDebuggerUrl);
+            await new Promise<void>((resolve, reject) => {
+              ws.onopen = () => resolve();
+              ws.onerror = () => reject(new Error("could not reach the Chrome tab"));
+            });
+            const page = new CdpPage(ws, found.id);
+            await page.send("Page.enable");
+            await page.send("Network.enable");
+            return page;
+          }
+        }
+      } catch {
+        // page not listed yet
+      }
+      await sleep(200);
+    }
+    return this.open();
   }
 
   /** Opens a new tab. */
@@ -293,6 +346,55 @@ export class Chrome {
   async closePage(page: CdpPage): Promise<void> {
     page.close();
     await fetch(`http://127.0.0.1:${this.port}/json/close/${page.targetId}`).catch(() => {});
+  }
+
+  /** Sends `Browser.close` so SQLite cookies flush to disk before the process exits. */
+  async closeGracefully(): Promise<void> {
+    const child = this.child;
+    const port = this.port;
+    if (child === undefined) return;
+    const exited = new Promise<void>((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        resolve();
+        return;
+      }
+      const timer = setTimeout(resolve, 2_500);
+      child.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    let ws: WebSocket | undefined;
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
+        signal: AbortSignal.timeout(1_500),
+      });
+      if (res.ok) {
+        const info = (await res.json()) as { webSocketDebuggerUrl?: string };
+        if (info.webSocketDebuggerUrl !== undefined) {
+          ws = new WebSocket(info.webSocketDebuggerUrl);
+          await new Promise<void>((resolve, reject) => {
+            if (ws === undefined) return reject(new Error("closed"));
+            ws.onopen = () => {
+              ws?.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+              resolve();
+            };
+            ws.onerror = () => reject(new Error("ws error"));
+          });
+        }
+      }
+    } catch {
+      // fall through to exited / force stop
+    } finally {
+      ws?.close();
+    }
+    await exited;
+    if (this.child === child && child.exitCode === null && child.signalCode === null) {
+      this.stop();
+    } else if (this.child === child) {
+      this.child = undefined;
+    }
+    await sleep(200);
   }
 
   stop(): void {

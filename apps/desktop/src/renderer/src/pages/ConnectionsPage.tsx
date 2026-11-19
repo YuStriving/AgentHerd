@@ -4,12 +4,13 @@
 
 import { useEffect, useState } from "react";
 import { MoreAppsRow, NotionRow } from "../components/AppsSection";
+import { DanjuanRow } from "../components/DanjuanSection";
 import { FeedsSection } from "../components/FeedsSection";
 import { LarkRow } from "../components/LarkSection";
 import { ObsidianRow } from "../components/ObsidianRow";
 import { SocialRows } from "../components/SocialSection";
 import { Group, Section } from "../components/ui";
-import { WestockSection } from "../components/WestockSection";
+import { WestockRow } from "../components/WestockSection";
 import { call, useApp } from "../store";
 
 /** 「已连接 4 个 · 1 个出错」 over 小红书, 知乎, 飞书, Notion and Obsidian. */
@@ -42,6 +43,7 @@ export function ConnectionsPage() {
     void call((h) => h.apps()).then((apps) => apps && useApp.setState({ apps }));
     void call((h) => h.feeds()).then((feeds) => feeds && useApp.setState({ feeds }));
     void call((h) => h.westock()).then((westock) => westock && useApp.setState({ westock }));
+    void call((h) => h.danjuan()).then((danjuan) => danjuan && useApp.setState({ danjuan }));
   }, []);
   return (
     <div className="flex flex-col gap-7">
@@ -57,7 +59,12 @@ export function ConnectionsPage() {
           </Group>
         </Section>
       </div>
-      <WestockSection />
+      <Section title="行情与投研" hint="免登录看最新大盘与个股行情，或连接雪球基金查看个人持仓涨跌">
+        <Group>
+          <WestockRow />
+          <DanjuanRow />
+        </Group>
+      </Section>
       <FeedsSection />
     </div>
   );

@@ -2,8 +2,8 @@
 
 `claude.webp` and `deepseek.webp` are cut from the Q-version (chibi) sprite sheets of
 [savanna0425/llm-pet](https://github.com/savanna0425/llm-pet) (`pets/claude-chibi`,
-`pets/deepseek-chibi`): the rows idle, running, waiting, jumping, failed and waving, plus one
-sleeping frame, laid out as in `../sprite.ts`.
+`pets/deepseek-chibi`): the rows idle, running, waiting, jumping, failed, one sleeping frame, waving, review, running
+right and running left, laid out as in `../sprite.ts`.
 
 - Art: Bilibili artist ZipZipPipe (<https://space.bilibili.com/4168597>,
   <https://www.pixiv.net/artworks/148186519>).

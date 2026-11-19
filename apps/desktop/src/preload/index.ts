@@ -3,7 +3,7 @@
 import type { HostEvent, HostMethod, RemoteHost } from "@agentherd/host/api";
 import { HOST_METHODS } from "@agentherd/host/api";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import type { Bridge } from "../shared/bridge.ts";
+import type { Bridge, PetRoom } from "../shared/bridge.ts";
 import type { PetArm, ShortcutState } from "../shared/pet-shortcuts.ts";
 
 const host = Object.fromEntries(
@@ -39,6 +39,11 @@ const bridge: Bridge = {
       const handler = (_e: unknown, tab: "chat" | "tasks" | "cards") => listener(tab);
       ipcRenderer.on("pet:show", handler);
       return () => ipcRenderer.removeListener("pet:show", handler);
+    },
+    onRoom(listener) {
+      const handler = (_e: unknown, room: PetRoom) => listener(room);
+      ipcRenderer.on("pet:room", handler);
+      return () => ipcRenderer.removeListener("pet:room", handler);
     },
     onArm(listener) {
       const handler = (_e: unknown, arm: PetArm) => listener(arm);

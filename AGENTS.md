@@ -4,7 +4,7 @@ Instructions for coding agents (and humans) who change this repo. This file is t
 `CLAUDE.md` is a short mirror; both carry the same `Policy-Sync` line. Change both in the
 same commit.
 
-Policy-Sync: 2026-11-16.1
+Policy-Sync: 2026-11-18.1
 
 ## 1. Non-negotiable
 
@@ -62,6 +62,7 @@ in your report.
 ### Language
 
 - English for code, comments, docs, commit messages (ADR 0002). Short sentences, common words.
+  Exception: the issue and PR templates in `.github/` are Chinese and English (see below).
 - Reply to the maintainer in the language they use.
 
 ### Commits
@@ -71,6 +72,27 @@ in your report.
 - Add a body that says **why** for anything but trivial changes.
 - One logical change per commit. Never hide a behavior change in a `refactor` commit.
 - Commit only when the maintainer or the plan says so.
+
+### Issues and pull requests
+
+The templates in `.github/` are bilingual (Chinese and English), so that both Chinese and
+English speakers can file and review. This is the one exception to "English everywhere".
+
+- **Issues** use a form: `bug.yml` or `feature.yml`. Blank issues are off. Security problems go
+  to a private advisory, never a public issue.
+- **Issue title:** `[Bug] <symptom>` or `[Feature] <need>`. A bug names the version or commit,
+  the OS, the steps, the result and the expected result. Say what you did not verify.
+- **PR title:** English Conventional Commits, `type(scope): what the owner sees`. A `fix` names the
+  symptom and its trigger, not the code change.
+- **PR body:** follow `.github/pull_request_template.md` and keep every section; write
+  `无 / None` where one does not apply. Sections: Related, Why, What changed, Docs in sync,
+  Risk, Verification, AI use.
+- **Verification** lists only checks that ran, with their result and environment (OS, real
+  Feishu or not). Skipped, failed or not run is written as such.
+- **Risk** is ticked when the change touches the guard list, rules, approvals, `packages/protocol`,
+  secrets or agent config export, with one line on why it stays safe.
+- A body is Chinese or English. Agents write it in the maintainer's language.
+- One PR, one logical change. Link the issue with `Closes #N` or `Refs #N`.
 
 ### When unsure
 
@@ -84,6 +106,7 @@ in your report.
 | `docs/spec/` | What the product does (numbered pages) |
 | `docs/adr/` | Why it is built this way |
 | `plans/` | Executable implementation plans and their states |
+| `.github/` | Bilingual issue forms and the pull request template |
 | `apps/desktop/` | Electron app (not yet created) |
 | `packages/*` | Core, protocol, rules, ACP client, exporters, channels, mock agent (not yet created) |
 

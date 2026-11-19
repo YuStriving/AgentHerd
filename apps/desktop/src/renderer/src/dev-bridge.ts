@@ -24,6 +24,8 @@
 import type {
   AgentView,
   AppsView,
+  DanjuanTest,
+  DanjuanView,
   FeedView,
   HostEvent,
   HostStatus,
@@ -445,6 +447,16 @@ function installFakeBridge(): void {
     westock = next;
     emit({ topic: "westock", data: structuredClone(westock) });
   };
+  let danjuan: DanjuanView = {
+    available: true,
+    accepted: false,
+    enabled: false,
+    state: "off",
+  };
+  const setDanjuan = (next: DanjuanView): void => {
+    danjuan = next;
+    emit({ topic: "danjuan", data: structuredClone(danjuan) });
+  };
   /** Changes 飞书 and tells the page, as the host's "lark" event does. */
   const setLark = (next: LarkView): void => {
     lark = next;
@@ -744,6 +756,61 @@ function installFakeBridge(): void {
           "- 上证指数 (sh000001): 3328.45 (+20.51 / +0.62%) | 开 3310.12 昨收 3307.94 区间 3302.18-3334.90 | 成交额 6420.15亿 CNY\n- 腾讯控股 (hk00700): 412.60 HKD (+6.20 / +1.53%) | 开 408.00 昨收 406.40 区间 407.20-415.00 | 成交额 98.42亿 HKD | PE 19.80\nSource: 腾讯财经实时行情 (qt.gtimg.cn) · Objective market data for reference only, not investment advice.",
         westock: structuredClone(westock),
       });
+    },
+    danjuan: () => delay(structuredClone(danjuan)),
+    connectDanjuan: async (accepted) => {
+      if (!accepted && !danjuan.accepted) {
+        throw new Error("连接雪球基金前需先确认只读风险提示");
+      }
+      setDanjuan({
+        available: true,
+        accepted: true,
+        enabled: true,
+        state: "signing-in",
+      });
+      await new Promise((r) => setTimeout(r, 350));
+      setDanjuan({
+        available: true,
+        accepted: true,
+        enabled: true,
+        state: "ready",
+        account: "默认账户",
+        checkedAt: new Date().toISOString(),
+      });
+      return structuredClone(danjuan);
+    },
+    cancelDanjuanLogin: () => {
+      setDanjuan({
+        available: true,
+        accepted: danjuan.accepted,
+        enabled: false,
+        state: "off",
+      });
+      return delay(structuredClone(danjuan));
+    },
+    testDanjuan: (): Promise<DanjuanTest> =>
+      delay({
+        ok: danjuan.state === "ready",
+        message:
+          danjuan.state === "ready"
+            ? "连接正常：共 3 只持仓基金，总资产 128450.20元"
+            : "还没连接雪球基金",
+        ...(danjuan.state === "ready"
+          ? {
+              sample:
+                "雪球基金账户概览：总资产 128450.20元 · 最新日收益 (2026-11-18) +1120.40元 · 持有收益 +9420.15元\n近 5 个交易日估算汇总：+2.18% (+2741.80元，按当前持仓静态回算)\n持仓明细（按市值降序）：\n- 华泰柏瑞沪深300ETF联接C (006131) | 市值 62400.00元 (占比 48.6%) | 日收益 +590.10元 | 近5日 +2.35%\n  每日净值涨跌: 11-12 -0.30% · 11-13 +0.85% · 11-16 +0.42% · 11-17 +0.44% · 11-18 +0.92%\nSource: 雪球基金 (danjuanfunds.com) 本机登录态 · 近几日区间涨跌按当前持仓市值回算（未计期间申赎），仅供参考，不构成投资建议。",
+            }
+          : {}),
+        danjuan: structuredClone(danjuan),
+      }),
+    logoutDanjuan: () => {
+      setDanjuan({
+        available: true,
+        accepted: danjuan.accepted,
+        enabled: false,
+        state: "off",
+      });
+      return delay(structuredClone(danjuan));
     },
     socials: () => delay(socials),
     enableSocial: (platform) => {

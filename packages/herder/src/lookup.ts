@@ -16,6 +16,12 @@ export const READ_CHARS = 8_000;
 export const READ_CHARS_MAX = 30_000;
 export const SEARCH_RESULTS = 8;
 export const SEARCH_RESULTS_MAX = 10;
+/** A research search waits this long at most for its sources (ADR 0086). */
+export const RESEARCH_WAIT_MS = 8_000;
+/** Results a research search lists by default: the sources together. */
+export const RESEARCH_RESULTS = 12;
+/** Where web_search looks: one source, or research = web, GitHub and Hacker News at once. */
+export type SearchSource = "web" | "github" | "research";
 /** Tools that only read: a turn that used them changed nothing and may be retried. */
 export const LOOKUP_TOOL_NAMES: ReadonlySet<string> = new Set(["web_search", "web_read"]);
 const MAX_REDIRECTS = 5;
@@ -35,6 +41,8 @@ export interface LookupOptions {
    * GitHub allows 60 reads an hour from this address. Asked once.
    */
   githubToken?: () => Promise<string | undefined>;
+  /** How long a research search waits for its sources; RESEARCH_WAIT_MS unless a test sets it. */
+  researchWaitMs?: number;
 }
 
 export interface SearchResult {
@@ -331,6 +339,22 @@ function day(iso: string | undefined | null): string {
   return iso === undefined || iso === null ? "?" : iso.slice(0, 10);
 }
 
+/** Narrower first, then wider: the words as given, without CJK words, the first three, two. */
+export function githubQueries(query: string): string[] {
+  const words = query
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w !== "");
+  const latin = words.filter((w) => !/[\u3000-\u9fff\uac00-\ud7af]/.test(w));
+  const tries = [words, latin, latin.slice(0, 3), latin.slice(0, 2)];
+  const out: string[] = [];
+  for (const t of tries) {
+    const q = t.join(" ");
+    if (q !== "" && !out.includes(q)) out.push(q);
+  }
+  return out;
+}
+
 function repoLine(r: GithubRepo): string {
   const facts = [
     `★ ${r.stargazers_count}`,
@@ -353,16 +377,149 @@ export function githubRepoOf(url: URL): string | undefined {
   return `${owner}/${repo.replace(/\.git$/, "")}`;
 }
 
+interface HnStory {
+  title: string;
+  url?: string | null;
+  points?: number | null;
+  num_comments?: number | null;
+  objectID: string;
+  created_at?: string;
+}
+
+/** One result of a research search, before results from different sources are merged. */
+interface Hit {
+  title: string;
+  url: string;
+  lines: string[];
+}
+
+interface SourceRun {
+  name: string;
+  job: Promise<Hit[]>;
+  hits?: Hit[];
+  error?: string;
+}
+
+function webHit(r: SearchResult): Hit {
+  return { title: r.title, url: r.url, lines: r.snippet === "" ? [] : [r.snippet] };
+}
+
+function githubHit(r: GithubRepo): Hit {
+  const facts = [
+    `★ ${r.stargazers_count}`,
+    `${r.forks_count} forks`,
+    r.language ?? undefined,
+    `last push ${day(r.pushed_at)}`,
+  ].filter((x) => x !== undefined);
+  return {
+    title: r.full_name,
+    url: r.html_url,
+    lines: [r.description ?? "(no description)", facts.join(" · ")],
+  };
+}
+
+function hnHit(h: HnStory): Hit {
+  const discussion = `https://news.ycombinator.com/item?id=${h.objectID}`;
+  const url = h.url === undefined || h.url === null || h.url === "" ? discussion : h.url;
+  const facts = `${h.points ?? 0} points · ${h.num_comments ?? 0} comments · ${day(h.created_at)}`;
+  return {
+    title: h.title,
+    url,
+    lines: url === discussion ? [facts] : [facts, `discussion: ${discussion}`],
+  };
+}
+
+/** The same page however it is written: no scheme, www, query tracking, # or trailing slash. */
+export function sameLink(url: string): string {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "").toLowerCase();
+    const path = u.pathname.replace(/\/+$/, "").replace(/\.git$/, "");
+    const query = [...u.searchParams]
+      .filter(([k]) => !/^(utm_|ref$|source$)/.test(k))
+      .map(([k, v]) => `${k}=${v}`)
+      .join("&");
+    return `${host}${host === "github.com" ? path.toLowerCase() : path}${query === "" ? "" : `?${query}`}`;
+  } catch {
+    return url.trim();
+  }
+}
+
+/**
+ * Waits until the web and one more source have results, every source is done, or `waitMs`
+ * passed. A source still running then is left out (ADR 0086).
+ */
+async function waitForSources(runs: SourceRun[], waitMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await new Promise<void>((resolve) => {
+    let left = runs.length;
+    const check = () => {
+      const done = runs.filter((r) => r.hits !== undefined || r.error !== undefined);
+      const withHits = runs.filter((r) => (r.hits?.length ?? 0) > 0);
+      const webDone = runs[0] !== undefined && done.includes(runs[0]);
+      if (left === 0 || (webDone && withHits.length >= 2)) resolve();
+    };
+    for (const run of runs) {
+      run.job
+        .then(
+          (hits) => {
+            run.hits = hits;
+          },
+          (error: unknown) => {
+            run.error = error instanceof Error ? error.message : String(error);
+          },
+        )
+        .finally(() => {
+          left -= 1;
+          check();
+        });
+    }
+    timer = setTimeout(resolve, waitMs);
+  });
+  clearTimeout(timer);
+}
+
+function sourceState(run: SourceRun): string {
+  if (run.hits !== undefined) return String(run.hits.length);
+  if (run.error !== undefined) return "failed";
+  return "too slow, left out";
+}
+
+/** One list: a link found by several sources once, with all of them, and first (ADR 0086). */
+export function mergeHits(
+  runs: readonly { name: string; hits?: readonly Hit[] }[],
+): (Hit & { sources: string[] })[] {
+  const byLink = new Map<string, Hit & { sources: string[]; rank: number }>();
+  for (const run of runs) {
+    (run.hits ?? []).forEach((hit, i) => {
+      const key = sameLink(hit.url);
+      const seen = byLink.get(key);
+      if (seen === undefined) {
+        byLink.set(key, { ...hit, lines: [...hit.lines], sources: [run.name], rank: i });
+        return;
+      }
+      if (!seen.sources.includes(run.name)) seen.sources.push(run.name);
+      for (const line of hit.lines) if (!seen.lines.includes(line)) seen.lines.push(line);
+      seen.rank = Math.min(seen.rank, i);
+    });
+  }
+  return [...byLink.values()]
+    .sort((a, b) => b.sources.length - a.sources.length || a.rank - b.rank)
+    .map(({ rank: _rank, ...hit }) => hit);
+}
+
 export class Lookup {
   private readonly fetch: Fetch;
   private readonly resolve: Resolve;
   private readonly githubToken: (() => Promise<string | undefined>) | undefined;
   private token: Promise<string | undefined> | undefined;
+  private readonly researchWaitMs: number;
 
   constructor(opts: LookupOptions = {}) {
     this.fetch = opts.fetch ?? fetch;
     this.resolve = opts.resolve ?? defaultResolve;
     this.githubToken = opts.githubToken;
+    this.researchWaitMs = opts.researchWaitMs ?? RESEARCH_WAIT_MS;
   }
 
   private async opts(): Promise<GetOptions> {
@@ -375,20 +532,29 @@ export class Lookup {
     return { fetch: this.fetch, resolve: this.resolve, github: await this.token };
   }
 
-  async search(query: string, source: "web" | "github", limit: number): Promise<string> {
+  async search(query: string, source: SearchSource, limit: number): Promise<string> {
+    if (source === "research") return this.research(query, limit);
     const n = Math.max(1, Math.min(SEARCH_RESULTS_MAX, Math.round(limit)));
-    const opts = await this.opts();
     if (source === "github") {
-      const got = await get(
-        `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&per_page=${n}`,
-        opts,
-        { Accept: "application/vnd.github+json" },
-      );
-      if (got.status !== 200) throw new Error(`GitHub search answered ${got.status}`);
-      const items = (JSON.parse(got.text) as { items?: GithubRepo[] }).items ?? [];
-      if (items.length === 0) return "nothing found";
-      return items.slice(0, n).map(repoLine).join("\n");
+      const found = await this.github(query, n);
+      if (found.repos.length === 0) return "nothing found";
+      const lines = found.repos.map(repoLine).join("\n");
+      return found.words === query.trim()
+        ? lines
+        : `No repository matched every word of "${query.trim()}"; these match "${found.words}":\n${lines}`;
     }
+    const results = await this.web(query, n);
+    if (results.length === 0) return "nothing found";
+    return results
+      .map(
+        (r, i) => `${i + 1}. ${r.title}\n   ${r.url}${r.snippet === "" ? "" : `\n   ${r.snippet}`}`,
+      )
+      .join("\n");
+  }
+
+  /** Web pages: DuckDuckGo, then Bing when it fails or finds nothing. [] when both find nothing. */
+  private async web(query: string, n: number): Promise<SearchResult[]> {
+    const opts = await this.opts();
     const problems: string[] = [];
     for (const engine of ENGINES) {
       try {
@@ -402,18 +568,100 @@ export class Lookup {
           problems.push(`${engine.name} found nothing`);
           continue;
         }
-        return results
-          .map(
-            (r, i) =>
-              `${i + 1}. ${r.title}\n   ${r.url}${r.snippet === "" ? "" : `\n   ${r.snippet}`}`,
-          )
-          .join("\n");
+        return results;
       } catch (error) {
         problems.push(`${engine.name}: ${(error as Error).message}`);
       }
     }
-    if (problems.every((p) => p.endsWith("found nothing"))) return "nothing found";
+    if (problems.every((p) => p.endsWith("found nothing"))) return [];
     throw new Error(`the web search did not work (${problems.join("; ")})`);
+  }
+
+  /**
+   * Web pages for research: DuckDuckGo and Bing at once, the first with results wins. One of
+   * them often turns a burst of searches away or takes seconds, and research waits for neither.
+   */
+  private async webAny(query: string, n: number): Promise<SearchResult[]> {
+    const opts = await this.opts();
+    const tries = ENGINES.map(async (engine) => {
+      const got = await get(engine.url(query), opts);
+      if (got.status !== 200) throw new Error(`${engine.name} answered ${got.status}`);
+      const results = engine.parse(got.text).slice(0, n);
+      if (results.length === 0) throw new Error(`${engine.name} found nothing`);
+      return results;
+    });
+    try {
+      return await Promise.any(tries);
+    } catch (error) {
+      const problems = (error as AggregateError).errors.map((e) => (e as Error).message);
+      if (problems.every((p) => p.endsWith("found nothing"))) return [];
+      throw new Error(`the web search did not work (${problems.join("; ")})`);
+    }
+  }
+
+  /** GitHub repositories; a sentence matches nothing, so fewer words are tried in turn. */
+  private async github(query: string, n: number): Promise<{ words: string; repos: GithubRepo[] }> {
+    const opts = await this.opts();
+    for (const words of githubQueries(query)) {
+      const got = await get(
+        `https://api.github.com/search/repositories?q=${encodeURIComponent(words)}&per_page=${n}`,
+        opts,
+        { Accept: "application/vnd.github+json" },
+      );
+      if (got.status !== 200) throw new Error(`GitHub search answered ${got.status}`);
+      const items = (JSON.parse(got.text) as { items?: GithubRepo[] }).items ?? [];
+      if (items.length > 0) return { words, repos: items.slice(0, n) };
+    }
+    return { words: query.trim(), repos: [] };
+  }
+
+  /** Hacker News stories (Algolia's public search): what people discuss, with points. */
+  private async hackerNews(query: string, n: number): Promise<HnStory[]> {
+    const got = await get(
+      `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=${n}`,
+      await this.opts(),
+    );
+    if (got.status !== 200) throw new Error(`Hacker News answered ${got.status}`);
+    return ((JSON.parse(got.text) as { hits?: HnStory[] }).hits ?? []).filter(
+      (h) => typeof h.title === "string" && h.title !== "",
+    );
+  }
+
+  /**
+   * Research (ADR 0086): web, GitHub and Hacker News at once. Results found by several sources
+   * come first; the same link is listed once with every source that found it. It waits for the
+   * web and one more source with results, or for all of them, or RESEARCH_WAIT_MS.
+   */
+  private async research(query: string, limit: number): Promise<string> {
+    const total = Math.max(1, Math.min(2 * SEARCH_RESULTS_MAX, Math.round(limit)));
+    const each = SEARCH_RESULTS_MAX;
+    const started = Date.now();
+    const runs: SourceRun[] = [
+      { name: "web", job: this.webAny(query, each).then((r) => r.map(webHit)) },
+      {
+        name: "GitHub",
+        job: this.github(query, 6).then((r) => r.repos.map(githubHit)),
+      },
+      { name: "Hacker News", job: this.hackerNews(query, 6).then((r) => r.map(hnHit)) },
+    ];
+    await waitForSources(runs, this.researchWaitMs);
+    const ms = Date.now() - started;
+    const counts = runs.map((r) => `${r.name} ${sourceState(r)}`).join(", ");
+    const merged = mergeHits(runs).slice(0, total);
+    const head = `Searched the web, GitHub and Hacker News for "${query.trim()}" in ${(ms / 1000).toFixed(1)} s (${counts}).`;
+    if (merged.length === 0) {
+      if (runs.every((r) => r.error !== undefined)) {
+        throw new Error(
+          `the search did not work (${runs.map((r) => `${r.name}: ${r.error}`).join("; ")})`,
+        );
+      }
+      return `${head}\nnothing found`;
+    }
+    const lines = merged.map((h, i) => {
+      const more = h.lines.map((l) => `\n   ${l}`).join("");
+      return `${i + 1}. [${h.sources.join(", ")}] ${h.title}\n   ${h.url}${more}`;
+    });
+    return `${head}\n${lines.join("\n")}`;
   }
 
   async read(link: string, max: number): Promise<string> {
@@ -485,13 +733,14 @@ export class Lookup {
 const searchSchema = obj({
   query: str({ description: "what to search for, in the words a page would use" }),
   source: opt(
-    oneOf(["web", "github"] as const, {
-      description: "web (default) or github: repositories by name and description",
+    oneOf(["web", "github", "research"] as const, {
+      description:
+        "web (default): pages, for a fact, a price or what happened. github: repositories by name, description and topics; GitHub needs every word to match, so give two or three key words in English (maimai mcp), not a sentence. research: web, GitHub and Hacker News at once, for projects, comparisons, how people do something or what they think of it; give a few key words, in English for technical topics",
     }),
   ),
   limit: opt(
     num({
-      description: `how many results, at most ${SEARCH_RESULTS_MAX} (default ${SEARCH_RESULTS})`,
+      description: `how many results, at most ${SEARCH_RESULTS_MAX} (default ${SEARCH_RESULTS}); research lists up to ${2 * SEARCH_RESULTS_MAX} (default ${RESEARCH_RESULTS})`,
     }),
   ),
 });
@@ -510,12 +759,16 @@ export function lookupTools(opts: LookupOptions = {}): AgentTool[] {
     name: "web_search",
     label: "Search the web",
     description:
-      "Searches the web, or GitHub repositories with source github. Lists titles, links and snippets. Read-only: for a quick answer; research over many pages is a task.",
+      "Searches the web, GitHub repositories (source github), or all of web, GitHub and Hacker News at once (source research, a few seconds). Lists titles, links and snippets; research marks which sources found each one. Read-only: for answers you give yourself; work over many pages is a task.",
     parameters: searchSchema,
     execute: async (
       _id: string,
-      args: { query: string; source?: "web" | "github"; limit?: number },
-    ) => ok(await lookup.search(args.query, args.source ?? "web", args.limit ?? SEARCH_RESULTS)),
+      args: { query: string; source?: SearchSource; limit?: number },
+    ) => {
+      const source = args.source ?? "web";
+      const limit = args.limit ?? (source === "research" ? RESEARCH_RESULTS : SEARCH_RESULTS);
+      return ok(await lookup.search(args.query, source, limit));
+    },
   };
   const read = {
     name: "web_read",

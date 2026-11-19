@@ -1209,6 +1209,51 @@ body {
   animation-delay: 0.6s;
 }
 
+/* The Herder is working on a reply: a small "…" bubble by the head (ADR 0087). */
+.pet-think {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  padding: 5px 7px;
+  border-radius: 10px 10px 10px 3px;
+  background: var(--pet-bg);
+  border: 1px solid var(--pet-line);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+}
+
+.pet-think i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--pet-muted);
+  animation: pet-think 1.2s ease-in-out infinite;
+}
+
+.pet-think i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.pet-think i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes pet-think {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
 /* The frames carry the motion (src/pet/sprite.ts); only the still sleeping frame breathes. */
 .mood-sleeping {
   animation: pet-sleep 5.8s ease-in-out infinite;
@@ -1274,6 +1319,7 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .pet-root .pet-figure,
   .pet-root .pet-zz i,
+  .pet-root .pet-think i,
   .pet-root .pet-sparkles i,
   .pet-root .pet-task-bar,
   .pet-root .pet-bubble {

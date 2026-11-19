@@ -392,6 +392,28 @@ function westockLines(host: HerderHost): string[] {
   ];
 }
 
+/** 雪球基金 (Danjuan Funds) personal fund account status (ADR 0077). */
+function danjuanLines(host: HerderHost): string[] {
+  const dj = host.danjuan?.();
+  if (dj === undefined) return [];
+  if (dj.ready) {
+    return [
+      "雪球基金 (Danjuan Funds): connected; call fund_holdings for the owner's personal fund holdings and recent NAV gains.",
+    ];
+  }
+  if (!dj.enabled || dj.state === "off") {
+    return [
+      "雪球基金 (Danjuan Funds): not connected (ask the owner to connect 雪球基金 in 设置 › 应用连接 › 行情与投研 before reading personal holdings).",
+    ];
+  }
+  if (dj.state === "signed-out") {
+    return [
+      "雪球基金 (Danjuan Funds): login expired (ask the owner to sign in again under 设置 › 应用连接 › 行情与投研 › 雪球基金).",
+    ];
+  }
+  return [`雪球基金 (Danjuan Funds): ${dj.state}.`];
+}
+
 /** A mail watch by id prefix or words of what it is about. */
 function oneWatch(host: HerderHost, query: string): { id: string; about: string } {
   const q = normalize(query);
@@ -730,6 +752,19 @@ const stockQuoteSchema = obj({
   }),
 });
 
+const fundHoldingsSchema = obj({
+  days: opt(
+    int({
+      description: "Recent trading days of NAV gains/losses to compute (1-30, default 5)",
+    }),
+  ),
+  account: opt(
+    str({
+      description: "Optional sub-account name or ID filter",
+    }),
+  ),
+});
+
 const mailUnwatchSchema = obj({
   watch: str({ description: "Mail watch id prefix or words of what it is about" }),
 });
@@ -773,6 +808,7 @@ export function herderTools(
           ...noticeLines(host),
           ...sourceLines(host),
           ...westockLines(host),
+          ...danjuanLines(host),
         ];
         return ok(lines.join("\n"));
       },
@@ -1179,6 +1215,20 @@ export function herderTools(
       },
     };
     all.push(stockTool as unknown as AgentTool);
+  }
+  const fundHoldings = host.fundHoldings;
+  if (fundHoldings !== undefined) {
+    const fundTool = {
+      name: "fund_holdings",
+      label: "Fund holdings",
+      description:
+        "Reads the owner's personal 雪球基金 (原蛋卷基金, danjuanfunds.com) portfolio: total assets, latest daily gain, holding gain/rate, per-fund shares & market value, and recent N trading days' NAV percentage changes and estimated P&L. Read-only. Never invent holdings or returns.",
+      parameters: fundHoldingsSchema,
+      execute: async (_id: string, args: { days?: number; account?: string }) => {
+        return ok(await fundHoldings(args));
+      },
+    };
+    all.push(fundTool as unknown as AgentTool);
   }
   if (host.watchIntake !== undefined) {
     all.push(...intakeTools(host, turn).map((t) => t as unknown as AgentTool));

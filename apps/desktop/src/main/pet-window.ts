@@ -14,8 +14,8 @@ import {
   screen,
   shell,
 } from "electron";
-import { hitPetRegion, type PetRegion } from "../shared/bridge.ts";
-import { type Edge, edgeOf, peekRight, tuckedX } from "../shared/pet-edge.ts";
+import { hitPetRegion, type PetRegion, type PetRoom } from "../shared/bridge.ts";
+import { type Edge, edgeOf, fitDrag, peekRight, pushedEdge, tuckedX } from "../shared/pet-edge.ts";
 import { fileToOpen, type PictureDisk, pictureToShow } from "./open-file";
 import { petMenuItems } from "./pet-menu";
 
@@ -50,6 +50,11 @@ interface DragState {
   width: number;
   height: number;
   moved: boolean;
+  /**
+   * How far the pointer kept pushing past the left (negative) or right (positive) edge of the
+   * screen after the pet stopped there; a push of a third of the figure tucks it on release.
+   */
+  push: number;
 }
 
 function parseRegions(raw: unknown): PetRegion[] | undefined {
@@ -90,6 +95,8 @@ export class PetWindow {
   private ignoringMouse: boolean | undefined;
   private size = { ...START };
   private lastPlaced: { x: number; y: number } | undefined;
+  /** The room last told to the pet, so it is sent only when it changes. */
+  private lastRoom: PetRoom | undefined;
   /** Where the figure stands: the window grows up and left from here and shrinks back to it. */
   private anchor: Corner | undefined;
   /** The screen edge the figure is tucked at; it peeks out while the cursor is on it. */
@@ -120,6 +127,7 @@ export class PetWindow {
         width: this.size.width,
         height: this.size.height,
         moved: false,
+        push: 0,
       };
       this.dragTimer = setInterval(() => this.stepDrag(), 16);
     });
@@ -135,7 +143,7 @@ export class PetWindow {
       if (w === undefined || d === undefined) return false;
       this.stepDragWith(w, d);
       if (d.moved && this.anchor !== undefined) {
-        this.tuckIfPastEdge();
+        this.tuckIfPastEdge(d.push);
         this.saveCorner({
           ...this.anchor,
           ...(this.edge === undefined ? {} : { edge: this.edge }),
@@ -267,10 +275,11 @@ export class PetWindow {
   }
 
   /**
-   * Dropped with a third of the figure past the left or right edge of its screen: it tucks there
-   * (ADR 0080). Its corner becomes where it stands when it peeks out.
+   * Dropped while pushed a third of the figure past the left or right edge of its screen (or,
+   * from an older position, standing that far past it): it tucks there (ADR 0080). Its corner
+   * becomes where it stands when it peeks out.
    */
-  private tuckIfPastEdge(): void {
+  private tuckIfPastEdge(push: number): void {
     const stage = this.regions?.[0];
     const b = this.lastPlaced;
     if (stage === undefined || b === undefined || this.anchor === undefined) return;
@@ -280,7 +289,7 @@ export class PetWindow {
       x: Math.round(figure.x + figure.width / 2),
       y: Math.round(figure.y + figure.height / 2),
     }).workArea;
-    const edge = edgeOf(figure, area);
+    const edge = pushedEdge(push, figure.width) ?? edgeOf(figure, area);
     if (edge === undefined) return;
     this.edge = edge;
     this.anchor = { ...this.anchor, right: peekRight(edge, stage, this.size.width, area) };
@@ -288,11 +297,30 @@ export class PetWindow {
 
   /** Puts the window where its corner, size and tuck say. */
   private place(w: BrowserWindow): void {
+    this.tellRoom(w);
     const b = this.boundsFor(w, this.size);
     if (this.lastPlaced?.x === b.x && this.lastPlaced?.y === b.y) return;
     this.lastPlaced = { x: b.x, y: b.y };
     w.setBounds(b);
     this.updateHitTest();
+  }
+
+  /**
+   * Tells the pet how much room it has left of and above its corner. Without this it measured the
+   * whole screen, grew taller than the room above the corner, and main had to move the window down
+   * to keep it on screen: the figure jumped each time the conversation opened or closed.
+   */
+  private tellRoom(w: BrowserWindow): void {
+    const anchor = this.anchor;
+    if (anchor === undefined || w.isDestroyed()) return;
+    const area = screen.getDisplayNearestPoint({
+      x: anchor.right - 1,
+      y: anchor.bottom - 1,
+    }).workArea;
+    const room = { width: anchor.right - area.x, height: anchor.bottom - area.y };
+    if (this.lastRoom?.width === room.width && this.lastRoom.height === room.height) return;
+    this.lastRoom = room;
+    w.webContents.send("pet:room", room);
   }
 
   private boundsFor(
@@ -385,8 +413,26 @@ export class PetWindow {
     const dy = cursor.y - d.cursorY;
     if (!d.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
     d.moved = true;
-    const x = Math.round(d.x + dx);
-    const y = Math.round(d.y + dy);
+    const rawX = Math.round(d.x + dx);
+    // The whole pet (the panel too) stays inside the work area of the screen under the pointer,
+    // on every system: dragged against an edge it slides along it and never leaves the screen.
+    const { x, y } = fitDrag(
+      { x: rawX, y: Math.round(d.y + dy), width: d.width, height: d.height },
+      screen.getDisplayNearestPoint(cursor).workArea,
+    );
+    // Pushing on past the left or right edge adds up, so a drop can tuck it there (ADR 0080);
+    // any move back inward starts over.
+    const over = rawX - x;
+    if (over === 0) {
+      // Held still at the edge keeps the push; only a move back inward drops it.
+      if (dx !== 0 && Math.sign(dx) !== Math.sign(d.push)) d.push = 0;
+    } else if (Math.sign(over) !== Math.sign(d.push)) d.push = over;
+    else d.push += over;
+    // The blocked part of the motion is used up, so moving back moves the pet at once.
+    d.x = x;
+    d.y = y;
+    d.cursorX = cursor.x;
+    d.cursorY = cursor.y;
     this.anchor = { right: x + d.width, bottom: y + d.height };
     if (this.lastPlaced?.x === x && this.lastPlaced?.y === y) return;
     this.lastPlaced = { x, y };
@@ -505,6 +551,10 @@ export class PetWindow {
       Menu.buildFromTemplate(
         items.map((item) => ({ label: item.label, click: run[item.action] })),
       ).popup({ window: created });
+    });
+    created.webContents.on("did-finish-load", () => {
+      this.lastRoom = undefined;
+      this.tellRoom(created);
     });
     if (this.opts.devUrl !== undefined)
       void created.loadURL(new URL("pet.html", this.opts.devUrl).href);

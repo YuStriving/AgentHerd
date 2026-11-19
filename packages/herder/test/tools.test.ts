@@ -225,6 +225,35 @@ describe("tools", () => {
     expect(offList).toContain("turned off in 设置 › 应用连接");
   });
 
+  it("fund_holdings reads personal fund returns and reflects session state in session_list (ADR 0077)", async () => {
+    const signedIn = tools(
+      {},
+      {
+        danjuan: {
+          enabled: true,
+          ready: true,
+          state: "ready",
+          report: "雪球基金账户概览：总资产 100000.00元 · 近 5 日 +2.10%",
+        },
+      },
+    );
+    expect(signedIn.names).toContain("fund_holdings");
+    const out = await signedIn.call("fund_holdings", { days: 7 });
+    expect(out).toContain("总资产 100000.00元");
+    expect(signedIn.rec.state.get("fundHoldings")).toEqual([{ days: 7 }]);
+    expect(await signedIn.call("session_list", {})).toContain(
+      "雪球基金 (Danjuan Funds): connected",
+    );
+
+    const signedOut = tools(
+      {},
+      {
+        danjuan: { enabled: true, ready: false, state: "signed-out" },
+      },
+    );
+    expect(await signedOut.call("session_list", {})).toContain("login expired");
+  });
+
   it("session_start passes the steps leaving the Mac the owner asked for (ADR 0056)", async () => {
     const dir = tmpdir();
     const { call, rec } = tools({ ownerText: `在 ${dir} 里修一下构建，做完推上去开个 PR` });

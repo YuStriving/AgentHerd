@@ -60,6 +60,17 @@ export interface PetBridge {
   peek?(on: boolean): void;
   /** The pet has something for the owner: it floats above other windows while on top is "busy". */
   float?(on: boolean): void;
+  /**
+   * The room left of and above the figure's corner on its screen. The pet never grows past it,
+   * so opening the conversation never pushes the figure. Missing in older builds.
+   */
+  onRoom?(listener: (room: PetRoom) => void): () => void;
+}
+
+/** Room for the pet: from the figure's bottom-right corner to the top-left of its screen. */
+export interface PetRoom {
+  width: number;
+  height: number;
 }
 
 export interface Bridge {
