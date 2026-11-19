@@ -31,6 +31,8 @@ export interface CoreTexts {
   /** A line for an image the owner sent, for whoever cannot see images. */
   imageAttached(path: string): string;
   fileAttached(name: string, path: string): string;
+  /** A message longer than OWNER_TEXT_MAX: how much was left out and where the whole is (ADR 0083). */
+  longMessage(more: number, path: string): string;
   runAccepted: (title: string) => string;
   herderFailed: (message: string) => string;
   /** The Herder now runs on another model (ADR 0037). */
@@ -130,6 +132,19 @@ export interface CoreTexts {
   failedBody(message: string): string;
   /** Report of a turn the owner stopped by ending its task (ADR 0072). */
   stoppedByOwner: string;
+  /** A task waited on the owner for a while: does it still matter (ADR 0081)? */
+  waitAsk(title: string, waited: string, last: string): string;
+  waitUnits: { minute: string; hour: string; day: string };
+  waitKeep: string;
+  waitDrop: string;
+  /** The question closed because the task went on, or was stopped, some other way. */
+  waitMovedOn: string;
+  /** The question closed without an answer for a day; the task stopped. */
+  waitGaveUp: string;
+  /** Why the task ended when nobody answered. */
+  waitGaveUpWhy: string;
+  /** The prompt a task gets when the owner still wants it. */
+  waitKeepPrompt: string;
   result: Record<ReportResult, string>;
   /** Between the result and the task in a report title. */
   titleSep: string;
@@ -261,6 +276,7 @@ const zh: CoreTexts = {
   noRelay: "现在没有在转接。",
   imageAttached: (path) => `[主人发来一张图片，已保存在 ${path}]`,
   fileAttached: (name, path) => `[主人发来一个文件「${name}」，已保存在 ${path}]`,
+  longMessage: (more, path) => `[消息太长，后面 ${more} 个字没有放进来；整段存在 ${path}]`,
   noProject: "无项目",
   workspaceConflict: (f) =>
     `这些文件你和任务都改了，保留了你的版本，任务的改动没有放进去：\n${f.map((x) => `· ${x}`).join("\n")}`,
@@ -337,6 +353,16 @@ const zh: CoreTexts = {
   couldNotStartBody: (m) => `Agent 启动失败：${m}`,
   failedBody: (m) => `任务失败：${m}`,
   stoppedByOwner: "你停下了这个任务，做到一半的事没有做完。",
+  waitAsk: (title, waited, last) =>
+    `「${title}」在等你回复，已经 ${waited} 了${last === "" ? "。" : `：\n${last}`}\n\n还要做吗？`,
+  waitUnits: { minute: "分钟", hour: "小时", day: "天" },
+  waitKeep: "还要做",
+  waitDrop: "不做了",
+  waitMovedOn: "这件事已经处理了",
+  waitGaveUp: "一天没等到回复，任务已经停下",
+  waitGaveUpWhy: "等你回复等了一天，没有回复",
+  waitKeepPrompt:
+    "The owner still wants this done. What you were waiting for may have gone stale (a sign-in link, a code, a QR code): redo that step, then tell the owner what they need to do now.",
   result: { done: "已完成", failed: "失败", blocked: "受阻", stopped: "已停止" },
   titleSep: "：",
   repeatedToolCall: (n, label) => `同一个工具调用重复了 ${n} 次：${label}`,
@@ -449,6 +475,8 @@ const en: CoreTexts = {
   noRelay: "No relay is active.",
   imageAttached: (path) => `[The owner sent an image, saved at ${path}]`,
   fileAttached: (name, path) => `[The owner sent a file "${name}", saved at ${path}]`,
+  longMessage: (more, path) =>
+    `[The message is too long: ${more} more characters were left out; the whole of it is saved at ${path}]`,
   noProject: "no project",
   workspaceConflict: (f) =>
     `You and the task both changed these files. Your version was kept; the task's changes were not put in:\n${f.map((x) => `- ${x}`).join("\n")}`,
@@ -532,6 +560,16 @@ const en: CoreTexts = {
   couldNotStartBody: (m) => `Could not start the agent: ${m}`,
   failedBody: (m) => `The task failed: ${m}`,
   stoppedByOwner: "You stopped this task; what it was doing is not finished.",
+  waitAsk: (title, waited, last) =>
+    `"${title}" has waited for you for ${waited}${last === "" ? "." : `:\n${last}`}\n\nStill want it done?`,
+  waitUnits: { minute: "min", hour: "h", day: "days" },
+  waitKeep: "Keep going",
+  waitDrop: "Drop it",
+  waitMovedOn: "Already handled",
+  waitGaveUp: "No answer for a day; the task stopped",
+  waitGaveUpWhy: "it waited a day for the owner without an answer",
+  waitKeepPrompt:
+    "The owner still wants this done. What you were waiting for may have gone stale (a sign-in link, a code, a QR code): redo that step, then tell the owner what they need to do now.",
   result: { done: "Done", failed: "Failed", blocked: "Blocked", stopped: "Stopped" },
   titleSep: ": ",
   repeatedToolCall: (n, label) => `the same tool call ran ${n} times: ${label}`,

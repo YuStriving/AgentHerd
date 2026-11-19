@@ -119,17 +119,30 @@ export {
   testModel,
 } from "./models.ts";
 export {
+  ANSWER_TEXT_MAX,
   CONTEXT_LABEL,
   composeTaskPrompt,
+  cutInput,
+  EVENT_TEXT_MAX,
   eventsPrompt,
   HERDER_LABEL,
   OWNER_LABEL,
   QUIET,
   quoteAgent,
   systemPrompt,
+  VOICE_REPLY_MAX,
   voicePrompt,
 } from "./prompt.ts";
 export { STYLE_SOURCE, stylePrompt } from "./style.ts";
+export {
+  filterSuggestion,
+  SUGGEST_MAX_CHARS,
+  SUGGEST_MAX_TOKENS,
+  SUGGEST_TIMEOUT_MS,
+  type SuggestRequest,
+  sampleSuggestion,
+  suggestInstruction,
+} from "./suggest.ts";
 export {
   fallbackOrder,
   findTasks,

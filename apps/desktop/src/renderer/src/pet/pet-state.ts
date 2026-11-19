@@ -424,3 +424,74 @@ export function cardGroups(cards: readonly PetCard[]): { waiting: PetCard[]; rec
     .map(({ c }) => c);
   return { waiting, recent };
 }
+
+/** Dots over the pet's head, one per running task (ADR 0082). */
+export const TASK_DOTS_MAX = 5;
+
+export interface TaskDot {
+  id: string;
+  title: string;
+  tone: "blue" | "amber" | "red" | "gray";
+  /** What a dot's tooltip says: 「修登录 401 · 在做」. */
+  label: string;
+}
+
+/**
+ * The running tasks as dots, those waiting on the owner first; `more` counts the rest. A stuck
+ * task is red here: on the pet's body it is what needs a look.
+ */
+export function taskDots(
+  tasks: readonly Task[],
+  now = Date.now(),
+): { dots: TaskDot[]; more: number } {
+  const running = taskGroups(tasks, now).running;
+  const dots = running.slice(0, TASK_DOTS_MAX).map((task) => {
+    const stage = TASK_STAGE[task.stage];
+    const tone =
+      task.stage === "stuck"
+        ? "red"
+        : stage.tone === "green"
+          ? "blue"
+          : (stage.tone as TaskDot["tone"]);
+    return { id: task.id, title: task.title, tone, label: `${task.title} · ${stage.text}` };
+  });
+  return { dots, more: running.length - dots.length };
+}
+
+/** A file dropped on the pet, waiting to be sent with the next message (ADR 0082). */
+export interface Drop {
+  path: string;
+  name: string;
+  picture: boolean;
+}
+
+/** Adds dropped paths to those already waiting: no repeats, at most `max`, empty paths left out. */
+export function addDrops(current: readonly Drop[], paths: readonly string[], max: number): Drop[] {
+  const next = [...current];
+  for (const path of paths) {
+    if (path === "" || next.some((d) => d.path === path)) continue;
+    if (next.length >= max) break;
+    const name =
+      path
+        .split(/[\\/]/)
+        .filter((x) => x !== "")
+        .at(-1) ?? path;
+    next.push({ path, name, picture: /\.(png|jpe?g|gif|webp)$/i.test(path) });
+  }
+  return next;
+}
+
+/**
+ * The Herder's guess at the owner's next message, shown in the empty input (ADR 0084): only
+ * while nothing is typed or dropped and the chat is up.
+ */
+export function suggestionFor(
+  view: Pick<PetView, "suggestion">,
+  draft: string,
+  drops: number,
+  offline: boolean,
+): string | undefined {
+  if (offline || draft !== "" || drops > 0) return undefined;
+  const text = view.suggestion?.trim();
+  return text === undefined || text === "" ? undefined : text;
+}

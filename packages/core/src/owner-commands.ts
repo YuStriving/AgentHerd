@@ -24,6 +24,10 @@ import type { Relay } from "./relay.ts";
 import { WORKSPACE_TARGET } from "./task-runner.ts";
 import type { Task } from "./tasks.ts";
 import { taskTitle } from "./tasks.ts";
+import { WAIT_TARGET } from "./waiting.ts";
+
+/** Longest owner message that goes in whole; the rest is saved as a file (ADR 0083). */
+export const OWNER_TEXT_MAX = 8000;
 
 /** How many Herder replies keep their choices open at once; older ones expire (ADR 0074). */
 export const CHOICES_OPEN_MAX = 20;
@@ -69,6 +73,9 @@ export class OwnerCommands {
         if (inbound.target.startsWith(INTAKE_TARGET)) {
           return await ctx.intake()?.answer(inbound.target, inbound.action);
         }
+        if (inbound.target.startsWith(WAIT_TARGET)) {
+          return await ctx.waits().answer(inbound.target, inbound.action);
+        }
         if (inbound.target.startsWith(WORKSPACE_TARGET)) {
           return await this.tasks.takeTaskVersion(inbound.target.slice(WORKSPACE_TARGET.length));
         }
@@ -89,7 +96,7 @@ export class OwnerCommands {
       if (inbound.ref !== undefined) {
         ctx.ownerMessage = { ref: inbound.ref, at: ctx.clock.now().getTime() };
       }
-      const text = [inbound.text, ...this.saveFiles(inbound.files ?? [])]
+      const text = [this.cutLong(inbound.text), ...this.saveFiles(inbound.files ?? [])]
         .filter((t) => t !== "")
         .join("\n");
       // A reply to a task's message goes to that task (ADR 0043).
@@ -180,6 +187,23 @@ export class OwnerCommands {
       ctx.store.audit("send.error", { kind: "ask", message: (error as Error).message });
     }
     ctx.herder()?.event({ kind: "ask-closed", title: ask.view.text, text: how.why });
+  }
+
+  /**
+   * A message longer than {@link OWNER_TEXT_MAX} (a pasted log, a whole document) keeps its start;
+   * the whole is saved under `<home>/attachments`, so the Herder's conversation stays small and a
+   * task can still read all of it (ADR 0083).
+   */
+  private cutLong(text: string): string {
+    if (text.length <= OWNER_TEXT_MAX) return text;
+    const dir = join(this.ctx.opts.home, "attachments");
+    mkdirSync(dir, { recursive: true });
+    const id = randomUUID().slice(0, 8);
+    const path = join(dir, `${new Date().toISOString().slice(0, 10)}-${id}-message.txt`);
+    writeFileSync(path, text);
+    this.ctx.store.audit("owner.long-message", { path, chars: text.length });
+    const head = text.slice(0, OWNER_TEXT_MAX);
+    return `${head}\n${this.ctx.texts.longMessage(text.length - head.length, path)}`;
   }
 
   /** Saves the owner's images under `<home>/attachments`, so agents can open them as files. */

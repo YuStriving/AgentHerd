@@ -13,6 +13,7 @@ import type {
   Channel,
   ChannelBinding,
   ChannelCapability,
+  InboundImage,
   InboundSink,
   MessageRef,
   SetupUI,
@@ -388,16 +389,30 @@ export class PetFeed {
   }
 
   /** The owner typed this in the pet's bubble: it reaches AgentHerd like a chat message. */
-  async say(text: string): Promise<void> {
-    const t = text.trim();
-    if (t === "") throw new Error("说点什么再发送");
+  /**
+   * The owner typed this in the pet, maybe with files dropped on it (ADR 0082): pictures come as
+   * the message's images, other files as lines with their paths.
+   */
+  async say(
+    text: string,
+    dropped: { images?: InboundImage[]; lines?: string[] } = {},
+  ): Promise<void> {
+    const images = dropped.images ?? [];
+    const t = [text.trim(), ...(dropped.lines ?? [])].filter((x) => x !== "").join("\n");
+    if (t === "" && images.length === 0) throw new Error("说点什么再发送");
     const { sink, ownerId } = this.inbound();
     if (this.opts.echo !== undefined && this.inner !== undefined) {
       // Not a message of its own: the owner wrote it, so the chat app should not ring for it.
       // Held, not sent, so the Herder does not wait on Feishu either.
-      this.hold(this.inner, [this.opts.echo(t)]);
+      const pictures = images.length === 0 ? "" : ` 🖼️×${images.length}`;
+      this.hold(this.inner, [this.opts.echo(`${t}${pictures}`.trim())]);
     }
-    await sink({ kind: "message", text: t, from: ownerId });
+    await sink({
+      kind: "message",
+      text: t,
+      from: ownerId,
+      ...(images.length === 0 ? {} : { images }),
+    });
   }
 
   private hold(channel: Channel, lines: string[], first = false): void {

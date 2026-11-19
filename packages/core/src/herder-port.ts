@@ -95,6 +95,12 @@ export interface VoiceRequest {
 }
 
 /** Everything the Herder can do. There is deliberately nothing here that answers an item. */
+/** Where the Herder's guess at the owner's next message goes (ADR 0084). */
+export interface HerderSuggestion {
+  on(): boolean;
+  show(text: string): void;
+}
+
 export interface HerderHost {
   readonly locale: Locale;
   readonly texts: CoreTexts;
@@ -177,6 +183,11 @@ export interface HerderHost {
   noticeLevels?(): Record<NoticeKind, NoticeLevel>;
   /** Changes one when the owner asks (「合并了不用告诉我」); throws on an unknown kind or level. */
   setNoticeLevel?(kind: NoticeKind, level: NoticeLevel): void;
+  /**
+   * What the owner might say next, for the desktop pet's input (ADR 0084): whether to work one out
+   * now, and where to put it. Absent → none.
+   */
+  suggestion?: HerderSuggestion;
   audit(type: string, data: Record<string, unknown>): void;
   /** Keeps a line of the Herder's conversation with the owner (`herder_turns`). */
   recordTurn(role: HerderTurnRole, text: string, taskId?: string): void;

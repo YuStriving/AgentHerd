@@ -2,9 +2,9 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeChannel } from "@agentherd/channel-fake";
-import { type Herd, type SecretStore, Store } from "@agentherd/core";
+import { type Herd, type HerderHost, type SecretStore, Store } from "@agentherd/core";
 import { afterEach, describe, expect, it } from "vitest";
-import type { HostEvent } from "../src/api.ts";
+import { DEFAULT_PET, type HostEvent } from "../src/api.ts";
 import { readConfig, writeConfig } from "../src/config.ts";
 import { Host } from "../src/host.ts";
 import { connectHost, isHostRunning, serveApi, socketPath } from "../src/server.ts";
@@ -166,24 +166,66 @@ describe("Host", () => {
 
   it("shows the desktop pet by default, saves its figure and passes the owner's words on (ADR 0070)", async () => {
     const t = makeHost(true);
-    expect(t.host.status().pet).toEqual({ on: true, figure: "deepseek" });
+    expect(t.host.status().pet).toEqual(DEFAULT_PET);
     expect(t.host.pet()).toEqual({ connected: false, pending: [], history: [], cards: [] });
     await expect(t.host.stopTask("t1")).rejects.toThrow("not running");
     await t.host.start();
     expect(t.host.pet().connected).toBe(true);
 
     expect(t.host.updateSettings({ pet: { figure: "claude" } }).pet).toEqual({
-      on: true,
+      ...DEFAULT_PET,
       figure: "claude",
     });
     expect(t.host.updateSettings({ pet: { on: false } }).pet).toEqual({
+      ...DEFAULT_PET,
       on: false,
       figure: "claude",
     });
-    expect(readConfig(t.home).pet).toEqual({ on: false, figure: "claude" });
+    expect(readConfig(t.home).pet).toMatchObject({ on: false, figure: "claude" });
     expect(() => t.host.updateSettings({ pet: { figure: "cat" as never } })).toThrow(
       /claude, deepseek/,
     );
+    // Notifications and quiet hours (ADR 0079).
+    expect(
+      t.host.updateSettings({
+        pet: { sound: false, quietHours: "22:30-07:45", quietUntil: "2026-11-19T12:00:00.000Z" },
+      }).pet,
+    ).toMatchObject({ notify: true, sound: false, quietHours: "22:30-07:45" });
+    expect(() => t.host.updateSettings({ pet: { quietHours: "25:00-07:00" } })).toThrow(
+      /HH:MM-HH:MM/,
+    );
+    expect(() => t.host.updateSettings({ pet: { quietUntil: "soon" } })).toThrow(/quietUntil/);
+    expect(() => t.host.updateSettings({ pet: { notify: "yes" as never } })).toThrow(/pet.notify/);
+    t.host.updateSettings({ pet: { sound: true, quietHours: "", quietUntil: "" } });
+    // Global shortcuts (ADR 0080).
+    expect(t.host.status().pet).toMatchObject({
+      talkKey: "CommandOrControl+Shift+Space",
+      approveKey: "CommandOrControl+Shift+Y",
+    });
+    expect(
+      t.host.updateSettings({ pet: { talkKey: "Control+Alt+Space", approveKey: "" } }).pet,
+    ).toMatchObject({
+      talkKey: "Control+Alt+Space",
+      approveKey: "",
+    });
+    expect(() => t.host.updateSettings({ pet: { talkKey: "Y" } })).toThrow(
+      /pet.talkKey must be a shortcut/,
+    );
+    expect(() => t.host.updateSettings({ pet: { approveKey: "Control+Alt+Space" } })).toThrow(
+      /different shortcuts/,
+    );
+    t.host.updateSettings({
+      pet: { talkKey: "CommandOrControl+Shift+Space", approveKey: "CommandOrControl+Shift+Y" },
+    });
+    // Where it floats (ADR 0080).
+    expect(t.host.status().pet).toMatchObject({ onTop: "always", overFullscreen: false });
+    expect(
+      t.host.updateSettings({ pet: { onTop: "busy", overFullscreen: true } }).pet,
+    ).toMatchObject({ onTop: "busy", overFullscreen: true });
+    expect(() => t.host.updateSettings({ pet: { onTop: "never" as never } })).toThrow(
+      /pet.onTop must be one of always, busy/,
+    );
+    t.host.updateSettings({ pet: { onTop: "always", overFullscreen: false } });
 
     await t.host.petSay("在吗");
     const chat = t.channels[0];
@@ -212,6 +254,46 @@ describe("Host", () => {
     ]);
     await expect(t.host.petPress("nothing", "allow")).rejects.toThrow("这件事已经处理过了");
   });
+
+  it("shows the Herder's guess at the owner's next message until anything new is said (ADR 0084)", async () => {
+    const t = makeHost(true);
+    await t.host.start();
+    let port: HerderHost | undefined;
+    const herd = (t.host as unknown as { herd: Herd }).herd;
+    await herd.setHerder((h) => {
+      port = h;
+      return {
+        ownerMessage: () => {},
+        ownerAnswer: () => {},
+        event: () => {},
+        stop: async () => {},
+      };
+    });
+    const hook = port?.suggestion;
+    expect(hook?.on()).toBe(true);
+    hook?.show("把 b 下载下来");
+    expect(t.host.pet().suggestion).toBe("把 b 下载下来");
+    expect(t.events.some((e) => e.topic === "pet" && e.data.suggestion === "把 b 下载下来")).toBe(
+      true,
+    );
+    // A card that waits for the owner comes first.
+    hook?.show("好");
+    await new Promise((r) => setTimeout(r, 5));
+    herd.store.putOwnerCard("fake:m1", { kind: "ask", askId: "a1", text: "用哪个？", options: [] });
+    (t.host as unknown as { petFeed: { isOpen(ref: string): boolean } }).petFeed.isOpen = () =>
+      true;
+    expect(t.host.pet().suggestion).toBeUndefined();
+    // Anything said makes it stale.
+    hook?.show("再试一次");
+    port?.recordTurn("owner", "算了");
+    expect(t.host.pet().suggestion).toBeUndefined();
+    // The owner can turn it off.
+    expect(t.host.updateSettings({ pet: { suggest: false } }).pet.suggest).toBe(false);
+    expect(hook?.on()).toBe(false);
+    expect(() => t.host.updateSettings({ pet: { suggest: "yes" as never } })).toThrow(
+      /pet.suggest must be true or false/,
+    );
+  }, 20_000);
 
   it("shows the Herder's schedules and lets the owner pause and remove them (ADR 0055)", async () => {
     const off = makeHost(false);

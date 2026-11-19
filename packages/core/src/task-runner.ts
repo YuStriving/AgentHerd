@@ -641,6 +641,27 @@ export class TaskRunner {
   }
 
   /**
+   * The owner let a task go (ADR 0081): its agent stops if it still runs, and a task that waited
+   * on the owner stops waiting. Ending alone leaves the stage of its last report, so a task that
+   * said "waiting for you" kept waiting for ever, also across restarts.
+   */
+  async letGo(taskId: string, why: string): Promise<void> {
+    const { ctx } = this;
+    const f = ctx.following.get(taskId);
+    if (f === undefined) throw new Error(`no task ${taskId}`);
+    await this.endTask(taskId, why);
+    if (f.task.stage !== "needs-owner" && f.task.stage !== "stuck") return;
+    delete f.report;
+    f.task.stage = "failed";
+    f.task.lastReport = why;
+    f.task.updatedAt = ctx.clock.now().toISOString();
+    saveTask(ctx, f);
+    ctx.store.audit("task.let-go", { taskId, why });
+    ctx.board.changed();
+    await ctx.board.flush();
+  }
+
+  /**
    * Messages a task never read because it ended first go back instead of vanishing (ADR 0061):
    * the owner's to the Herder, which sees it as the owner's message with what happened; the
    * Herder's (or the owner's, with no Herder to take it) to the owner, whose reply opens the task

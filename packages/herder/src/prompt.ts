@@ -173,6 +173,22 @@ export function composeTaskPrompt(ownerText: string, addedContext: string | unde
   return `${owner}\n\n${CONTEXT_LABEL}\n${addedContext.trim()}`;
 }
 
+/** Longest task reply the Herder reads to tell the owner; the card keeps the whole (ADR 0083). */
+export const VOICE_REPLY_MAX = 12_000;
+/** Longest text of one event or one new-work item the Herder reads (ADR 0083). */
+export const EVENT_TEXT_MAX = 4000;
+/** Longest owner answer the Herder reads; long messages are already cut by AgentHerd (ADR 0083). */
+export const ANSWER_TEXT_MAX = 8000;
+
+/**
+ * Text cut to `max` characters, saying how much was left out and where the rest is; whatever
+ * comes in, the Herder's conversation stays a bounded size (ADR 0083).
+ */
+export function cutInput(text: string, max: number, rest: string): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}\n… (${text.length - max} more characters left out; ${rest})`;
+}
+
 export function quoteAgent(text: string): string {
   return `<<<agent\n${text.replaceAll("agent>>>", "agent> >>")}\nagent>>>`;
 }
@@ -188,7 +204,7 @@ export function ownerMessagePrompt(
 }
 
 export function ownerAnswerPrompt(question: string, answer: string, other = false): string {
-  const base = `The owner answered your question.\nQuestion: ${question}\nAnswer: ${answer}`;
+  const base = `The owner answered your question.\nQuestion: ${cutInput(question, EVENT_TEXT_MAX, "it was your own question")}\nAnswer: ${cutInput(answer, ANSWER_TEXT_MAX, "ask the owner if you need it")}`;
   if (!other) return base;
   return `${base}\nThe owner will type their own answer in the next message. Reply in one short line that you are waiting, and do nothing else.`;
 }
@@ -197,7 +213,8 @@ export function ownerAnswerPrompt(question: string, answer: string, other = fals
  * New GitHub work the owner chose to start, or their automatic watch found (ADR 0052). On the
  * watch's trial run (ADR 0064) the turn decides as it would, but session_start starts nothing.
  */
-export function intakePrompt(item: string, auto: boolean, trial = false): string {
+export function intakePrompt(whole: string, auto: boolean, trial = false): string {
+  const item = cutInput(whole, EVENT_TEXT_MAX, "read the item's link for the rest");
   if (trial) {
     return `A new-work watch the owner made automatic found this item. The watch is still on its trial run: the owner got the usual 「开任务 / 忽略」 card, and nothing starts by itself yet.
 ${quoteAgent(item)}
@@ -239,7 +256,11 @@ export function voicePrompt(request: VoiceRequest): string {
     "[Task result, not from the owner]",
     `Task ${request.taskId.slice(0, 8)} "${request.title}" ${ENDED[request.result]}.`,
   ];
-  const reply = request.reply.trim();
+  const reply = cutInput(
+    request.reply.trim(),
+    VOICE_REPLY_MAX,
+    "the card holds the whole reply; task_read shows more",
+  );
   lines.push(
     reply === "" ? "The agent wrote no reply." : `The agent's reply:\n${quoteAgent(reply)}`,
   );
@@ -249,7 +270,7 @@ export function voicePrompt(request: VoiceRequest): string {
       .filter((k) => (r[k]?.length ?? 0) > 0)
       .map((k) => `${k}: ${r[k]?.join("; ")}`);
     lines.push(
-      `The agent's own report (state ${r.state}):\n${quoteAgent([r.summary, ...extra].join("\n"))}`,
+      `The agent's own report (state ${r.state}):\n${quoteAgent(cutInput([r.summary, ...extra].join("\n"), EVENT_TEXT_MAX, "task_read shows more"))}`,
     );
   }
   lines.push(
@@ -299,7 +320,8 @@ export function resumedNote(at: string): string {
 }
 
 export function eventsPrompt(events: HerderEvent[]): string {
-  const line = (e: HerderEvent): string => {
+  const line = (event: HerderEvent): string => {
+    const e = { ...event, text: cutInput(event.text, EVENT_TEXT_MAX, "task_read shows more") };
     const about = e.taskId ? `task ${e.taskId.slice(0, 8)} "${e.title}"` : `"${e.title}"`;
     // The Herder's own question, closed without a pick: AgentHerd's words, not an agent's.
     if (e.kind === "ask-closed") return `- your question "${e.title}" closed: ${e.text}`;

@@ -13,7 +13,7 @@ import type {
 } from "@agentherd/core";
 import { REVIEW_JOB } from "@agentherd/core";
 import { Agent, type AgentMessage, type AgentTool, type StreamFn } from "@agentherd/herder-loop";
-import { checkHerdUi } from "@agentherd/protocol/herd-ui";
+import { checkHerdUi, herdUiChoices } from "@agentherd/protocol/herd-ui";
 import { guardCheck } from "@agentherd/rules";
 import { type Api, isContextOverflow, type Model } from "@earendil-works/pi-ai";
 import {
@@ -43,6 +43,7 @@ import {
   voicePrompt,
 } from "./prompt.ts";
 import { stylePrompt } from "./style.ts";
+import { sampleSuggestion } from "./suggest.ts";
 import {
   herderTools,
   otherOption,
@@ -160,6 +161,14 @@ export class Herder implements HerderPort {
   /** Pending messages this Herder already queued, so a resume does not queue them twice. */
   private readonly queuedPending = new Set<string>();
   private resumed = false;
+  private readonly streamFn: StreamFn;
+  private readonly ownKey: HerderOptions["getApiKey"];
+  /** The last request as sent: how many messages went in, and the folded view the model saw. */
+  private lastView: { input: number; view: AgentMessage[] } | undefined;
+  /** Counts suggestion runs; a newer turn makes an older one stale (ADR 0084). */
+  private suggestSeq = 0;
+  private suggestAbort: AbortController | undefined;
+  private suggesting: Promise<void> | undefined;
 
   constructor(opts: HerderOptions) {
     this.host = opts.host;
@@ -169,6 +178,8 @@ export class Herder implements HerderPort {
     this.heldRetryMs = opts.heldRetryMs ?? HELD_RETRY_MS;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     const ownKey = opts.getApiKey;
+    this.streamFn = opts.streamFn;
+    this.ownKey = ownKey;
     this.seesImages = opts.model.input.includes("image");
     this.now = opts.now ?? (() => Date.now());
     const log = this.host.herderLog() as AgentMessage[];
@@ -185,7 +196,11 @@ export class Herder implements HerderPort {
       streamFn: opts.streamFn,
       getApiKey: async (provider) => this.current.apiKey ?? (await ownKey?.(provider)),
       beforeToolCall: async ({ toolCall, args }) => this.check(toolCall.name, args),
-      transformContext: async (messages) => this.context.project(messages),
+      transformContext: async (messages) => {
+        const view = await this.context.project(messages);
+        this.lastView = { input: messages.length, view };
+        return view;
+      },
       initialState: {
         systemPrompt: this.fullSystemPrompt(),
         model: opts.model,
@@ -310,12 +325,16 @@ export class Herder implements HerderPort {
     for (const job of this.jobs) if (job.kind === "voice") job.done(undefined);
     this.jobs.length = 0;
     this.agent.abort();
+    this.dropSuggestion();
     await this.running;
   }
 
   /** Resolves when every queued job has run. For tests. */
   async idle(): Promise<void> {
-    while (this.running !== undefined) await this.running;
+    while (this.running !== undefined || this.suggesting !== undefined) {
+      await this.running;
+      await this.suggesting;
+    }
   }
 
   private enqueue(job: Job): void {
@@ -377,6 +396,7 @@ export class Herder implements HerderPort {
   }
 
   private async runJob(job: Job): Promise<void> {
+    this.dropSuggestion();
     let prompt: string;
     let images: OwnerImage[] = [];
     if (job.kind === "owner") {
@@ -524,6 +544,7 @@ export class Herder implements HerderPort {
       // The task sends it, as its report; an empty reply means the Herder could not say it.
       if (text !== "") this.host.recordTurn("herder", text, job.request.taskId);
       job.done(text === "" ? undefined : text);
+      if (text !== "") this.suggestNext(text);
       return;
     }
     if (text !== "") {
@@ -531,6 +552,66 @@ export class Herder implements HerderPort {
       await this.host.say(text);
     }
     this.save();
+    if (text !== "" && job.kind !== "intake") this.suggestNext(text);
+  }
+
+  /** Stops a suggestion still being worked out; a new turn makes it stale (ADR 0084). */
+  private dropSuggestion(): void {
+    this.suggestSeq++;
+    this.suggestAbort?.abort();
+    this.suggestAbort = undefined;
+  }
+
+  /**
+   * Works out what the owner might say next, the way Codex does it (ADR 0084): the last request
+   * as it was sent, the reply it got, and one instruction more. Not after the first reply, not when
+   * the reply offers answers or the Herder asked; dropped when anything happened meanwhile.
+   */
+  private suggestNext(reply: string): void {
+    const hook = this.host.suggestion;
+    if (hook === undefined || this.stopped || !hook.on()) return;
+    if (this.turn.asked || herdUiChoices(reply).length > 0) return;
+    const messages = this.agent.state.messages;
+    const replies = messages.filter(
+      (m) => m.role === "assistant" && m.content.some((c) => c.type === "text"),
+    ).length;
+    const last = this.lastView;
+    // The last request must be the one that got this reply, with nothing in between.
+    if (replies < 2 || last === undefined || messages.length !== last.input + 1) return;
+    const answer = messages.at(-1);
+    if (answer?.role !== "assistant") return;
+    const seq = ++this.suggestSeq;
+    const abort = new AbortController();
+    this.suggestAbort = abort;
+    const length = messages.length;
+    const started = this.now();
+    const run = async (): Promise<void> => {
+      const model = this.current.model;
+      const apiKey = this.current.apiKey ?? (await this.ownKey?.(model.provider));
+      const input = await this.agent.convertToLlm([...last.view, answer]);
+      const text = await sampleSuggestion({
+        streamFn: this.streamFn,
+        model,
+        ...(apiKey === undefined ? {} : { apiKey }),
+        messages: input,
+        locale: this.host.locale,
+        signal: abort.signal,
+      });
+      const stale =
+        seq !== this.suggestSeq || this.stopped || this.agent.state.messages.length !== length;
+      this.host.audit("herder.suggestion", {
+        shown: text !== undefined && !stale,
+        stale,
+        ms: this.now() - started,
+      });
+      if (text !== undefined && !stale) hook.show(text);
+    };
+    const running: Promise<void> = run()
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.suggesting === running) this.suggesting = undefined;
+      });
+    this.suggesting = running;
   }
 
   /**

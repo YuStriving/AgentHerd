@@ -17,5 +17,13 @@ if (process.platform === "darwin") {
     for (const key of ["CFBundleName", "CFBundleDisplayName"]) {
       execFileSync("plutil", ["-replace", key, "-string", NAME, plist]);
     }
+    // The edit breaks Electron's signature, and macOS refuses notifications to an app whose
+    // signature is broken (ADR 0079): sign the dev bundle again, ad hoc, when it no longer checks.
+    const bundle = join(electronDir, "dist/Electron.app");
+    try {
+      execFileSync("codesign", ["--verify", bundle], { stdio: "ignore" });
+    } catch {
+      execFileSync("codesign", ["--force", "--deep", "--sign", "-", bundle], { stdio: "ignore" });
+    }
   }
 }

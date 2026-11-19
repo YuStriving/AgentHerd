@@ -73,6 +73,7 @@ import type {
   ModelTest,
   ModelTiersView,
   PetFigure,
+  PetOnTop,
   PetSettings,
   PetView,
   ProbeTarget,
@@ -93,7 +94,7 @@ import type {
   WestockTest,
   WestockView,
 } from "./api.ts";
-import { DEFAULT_PET, PET_FIGURES } from "./api.ts";
+import { DEFAULT_PET, isPetShortcut, PET_FIGURES, PET_ON_TOP, QUIET_HOURS } from "./api.ts";
 import { Apps, newComposioUserId } from "./apps.ts";
 import type { AgentDef, Fetchers } from "./catalog.ts";
 import { withClaudeHome } from "./claude-home.ts";
@@ -105,6 +106,7 @@ import { Lark } from "./lark.ts";
 import { mcpServerFor } from "./mcp-socket.ts";
 import { LoginRun } from "./model-logins.ts";
 import { PET_CARDS_MAX, PET_HISTORY_MAX, PetFeed, petConversation } from "./pet.ts";
+import { droppedFiles } from "./pet-drop.ts";
 import { probeModels } from "./probe.ts";
 import { availableProfiles } from "./profiles.ts";
 import { withSystemProxy } from "./proxy.ts";
@@ -212,6 +214,8 @@ export class Host implements HostApi {
   private readonly westockCli: Westock;
   /** What the desktop pet sees of the chat (ADR 0070). */
   private readonly petFeed: PetFeed;
+  /** The Herder's guess at the owner's next message, and when it came (ADR 0084). */
+  private petSuggestion: { text: string; at: string } | undefined;
 
   constructor(opts: HostOptions) {
     this.opts = opts;
@@ -565,7 +569,21 @@ export class Host implements HostApi {
       },
       toolNotes: () => this.toolNotes(),
       watchesChanged: () => this.socialsChanged(),
-      herderTurnAdded: () => this.emit({ topic: "pet", data: this.pet() }),
+      herderTurnAdded: () => {
+        // Anything said makes the last guess stale (ADR 0084).
+        this.petSuggestion = undefined;
+        this.emit({ topic: "pet", data: this.pet() });
+      },
+      suggestion: {
+        on: () => {
+          const pet = petSettings(this.config());
+          return pet.on && pet.suggest;
+        },
+        show: (text) => {
+          this.petSuggestion = { text, at: new Date().toISOString() };
+          this.emit({ topic: "pet", data: this.pet() });
+        },
+      },
       ...(herder === undefined ? {} : { herder }),
       ...(this.opts.mcpSocket === undefined
         ? {}
@@ -810,11 +828,19 @@ export class Host implements HostApi {
 
   pet(): PetView {
     const last = this.petFeed.last;
+    const conversation = this.petConversation();
+    const guess = this.petSuggestion;
+    // A card that came after it waits for the owner: answering it comes first.
+    const suggestion =
+      guess === undefined || conversation.cards.some((c) => c.open && c.at > guess.at)
+        ? undefined
+        : guess.text;
     return {
       connected: this.petFeed.connected,
       ...(last === undefined ? {} : { last }),
       pending: this.petFeed.pending(),
-      ...this.petConversation(),
+      ...conversation,
+      ...(suggestion === undefined ? {} : { suggestion }),
     };
   }
 
@@ -833,8 +859,9 @@ export class Host implements HostApi {
     );
   }
 
-  async petSay(text: string): Promise<PetView> {
-    await this.petFeed.say(text);
+  async petSay(text: string, paths: string[] = []): Promise<PetView> {
+    const locale = this.config().locale ?? DEFAULT_LOCALE;
+    await this.petFeed.say(text, droppedFiles(paths, locale));
     return this.pet();
   }
 
@@ -1220,9 +1247,35 @@ export class Host implements HostApi {
     if (patch.keepAwake !== undefined) next.keepAwake = patch.keepAwake;
     if (patch.pet !== undefined) {
       const pet: PetSettings = { ...petSettings(config), ...patch.pet };
-      if (typeof pet.on !== "boolean") throw new Error("pet.on must be true or false");
+      for (const key of ["on", "notify", "sound", "overFullscreen", "suggest"] as const) {
+        if (typeof pet[key] !== "boolean") throw new Error(`pet.${key} must be true or false`);
+      }
       if (!PET_FIGURES.includes(pet.figure)) {
         throw new Error(`pet.figure must be one of ${PET_FIGURES.join(", ")}`);
+      }
+      if (
+        typeof pet.quietHours !== "string" ||
+        !(pet.quietHours === "" || QUIET_HOURS.test(pet.quietHours))
+      ) {
+        throw new Error('pet.quietHours must be "HH:MM-HH:MM" or ""');
+      }
+      if (
+        typeof pet.quietUntil !== "string" ||
+        !(pet.quietUntil === "" || !Number.isNaN(Date.parse(pet.quietUntil)))
+      ) {
+        throw new Error('pet.quietUntil must be a time or ""');
+      }
+      for (const key of ["talkKey", "approveKey"] as const) {
+        const value = pet[key];
+        if (typeof value !== "string" || !(value === "" || isPetShortcut(value))) {
+          throw new Error(`pet.${key} must be a shortcut like CommandOrControl+Shift+Y, or ""`);
+        }
+      }
+      if (pet.talkKey !== "" && pet.talkKey === pet.approveKey) {
+        throw new Error("pet.talkKey and pet.approveKey must be different shortcuts");
+      }
+      if (!PET_ON_TOP.includes(pet.onTop)) {
+        throw new Error(`pet.onTop must be one of ${PET_ON_TOP.join(", ")}`);
       }
       next.pet = pet;
     }
@@ -1358,5 +1411,35 @@ function petSettings(config: CliConfig): PetSettings {
   const figure: PetFigure = PET_FIGURES.includes(saved.figure as PetFigure)
     ? (saved.figure as PetFigure)
     : DEFAULT_PET.figure;
-  return { on: typeof saved.on === "boolean" ? saved.on : DEFAULT_PET.on, figure };
+  const flag = (key: "on" | "notify" | "sound" | "overFullscreen" | "suggest") =>
+    typeof saved[key] === "boolean" ? (saved[key] as boolean) : DEFAULT_PET[key];
+  const quietHours =
+    typeof saved.quietHours === "string" && QUIET_HOURS.test(saved.quietHours)
+      ? saved.quietHours
+      : DEFAULT_PET.quietHours;
+  const quietUntil =
+    typeof saved.quietUntil === "string" && !Number.isNaN(Date.parse(saved.quietUntil))
+      ? saved.quietUntil
+      : DEFAULT_PET.quietUntil;
+  const key = (name: "talkKey" | "approveKey") => {
+    const value = saved[name];
+    return typeof value === "string" && (value === "" || isPetShortcut(value))
+      ? value
+      : DEFAULT_PET[name];
+  };
+  return {
+    on: flag("on"),
+    figure,
+    notify: flag("notify"),
+    sound: flag("sound"),
+    quietHours,
+    quietUntil,
+    talkKey: key("talkKey"),
+    approveKey: key("approveKey"),
+    onTop: PET_ON_TOP.includes(saved.onTop as PetOnTop)
+      ? (saved.onTop as PetOnTop)
+      : DEFAULT_PET.onTop,
+    overFullscreen: flag("overFullscreen"),
+    suggest: flag("suggest"),
+  };
 }

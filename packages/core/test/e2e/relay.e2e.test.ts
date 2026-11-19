@@ -10,6 +10,7 @@ import type { AgentProfile, RelayView, ReportView, TextView } from "@agentherd/p
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeClock } from "../../src/clock.ts";
 import { Herd, RELAY_KEY } from "../../src/herd.ts";
+import { OWNER_TEXT_MAX } from "../../src/owner-commands.ts";
 import { Store } from "../../src/store.ts";
 import { CORE_TEXTS } from "../../src/texts.ts";
 
@@ -191,6 +192,28 @@ describe("E2E-RELAY", () => {
     expect(path.startsWith(join(dir, "attachments"))).toBe(true);
     expect(path.endsWith("-a_b_报告.pdf")).toBe(true);
     expect(new Uint8Array(readFileSync(path))).toEqual(data);
+  });
+
+  it("a very long message keeps its start and the whole is saved as a file (ADR 0083)", async () => {
+    const { channel, herd } = await setup(THREE_TURNS);
+    await channel.say(`/run mock ${dir} task`);
+    await until(() => reports(channel).length === 1);
+    const id = herd.tasks()[0]?.id ?? "";
+    await channel.say(`/relay ${id.slice(0, 8)}`);
+    const long = `日志开头\n${"x".repeat(OWNER_TEXT_MAX + 500)}`;
+    await herd.handle({ kind: "message", text: long, from: "owner" });
+    await until(() => texts(channel).includes("second done"));
+    const prompt =
+      herd
+        .transcript(id)
+        .entries.filter((e) => e.role === "prompt")
+        .at(-1)?.text ?? "";
+    expect(prompt.startsWith("日志开头\n")).toBe(true);
+    expect(prompt.length).toBeLessThan(OWNER_TEXT_MAX + 200);
+    const cut = /\[消息太长，后面 (\d+) 个字没有放进来；整段存在 (.+)\]$/.exec(prompt);
+    expect(Number(cut?.[1])).toBe(long.length - OWNER_TEXT_MAX);
+    expect(cut?.[2]?.startsWith(join(dir, "attachments"))).toBe(true);
+    expect(readFileSync(cut?.[2] ?? "", "utf8")).toBe(long);
   });
 
   it("the relay ends after relayIdleMinutes with no owner message", async () => {

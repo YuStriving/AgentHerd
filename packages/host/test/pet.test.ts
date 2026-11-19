@@ -1,12 +1,12 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FakeChannel, type SentMessage } from "@agentherd/channel-fake";
 import { Herd, type HerderTurn, type OwnerCard, Store } from "@agentherd/core";
 import type { Inbound, ItemView, ReportView, View } from "@agentherd/protocol";
 import { afterEach, describe, expect, it } from "vitest";
-import type { PetCardView } from "../src/api.ts";
+import { PET_DROP_MAX, type PetCardView } from "../src/api.ts";
 import {
   echoQuote,
   historyOf,
@@ -16,6 +16,7 @@ import {
   PetFeed,
   petConversation,
 } from "../src/pet.ts";
+import { droppedFiles, droppedPictureType } from "../src/pet-drop.ts";
 
 const BINDING = { channelId: "fake", ownerId: "owner", data: {} };
 
@@ -711,5 +712,52 @@ describe("E2E-HERD-UI-CHOICES in the pet (ADR 0074)", () => {
     expect(store.ownerCards()[0]?.view).toMatchObject({ chosen: "下载跑一下" });
     // Feishu's card got the same update.
     expect(fake.messages[0]?.view).toMatchObject({ chosen: "下载跑一下" });
+  });
+});
+
+describe("files dropped on the pet (ADR 0082)", () => {
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+
+  it("sends a picture as an image of the message and other files by their path", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentherd-drop-"));
+    const picture = join(dir, "screen.png");
+    const doc = join(dir, "plan.pdf");
+    const fake = join(dir, "not-really.png");
+    writeFileSync(picture, PNG);
+    writeFileSync(doc, "%PDF-1.4");
+    writeFileSync(fake, "hello");
+    const dropped = droppedFiles([picture, doc, fake, dir, picture], "zh-CN");
+    expect(dropped.images.map((x) => [x.mimeType, [...x.data]])).toEqual([["image/png", [...PNG]]]);
+    expect(dropped.lines).toEqual([
+      `[主人拖来文件「plan.pdf」：${doc}]`,
+      `[主人拖来文件「not-really.png」：${fake}]`,
+      `[主人拖来文件夹「${basename(dir)}」：${dir}]`,
+    ]);
+    expect(droppedFiles([doc], "en").lines).toEqual([
+      `[The owner dropped the file "plan.pdf" on the pet: ${doc}]`,
+    ]);
+  });
+
+  it("refuses what is not there, relative paths and too many files", () => {
+    expect(() => droppedFiles(["/nowhere/at/all.txt"], "zh-CN")).toThrow(
+      "找不到 /nowhere/at/all.txt",
+    );
+    expect(() => droppedFiles(["notes.txt"], "en")).toThrow("cannot find notes.txt");
+    const many = Array.from({ length: PET_DROP_MAX + 1 }, (_, i) => `/tmp/${i}`);
+    expect(() => droppedFiles(many, "zh-CN")).toThrow(`一次最多拖 ${PET_DROP_MAX} 个文件`);
+    expect(droppedPictureType(new Uint8Array([0xff, 0xd8, 0xff, 0]))).toBe("image/jpeg");
+    expect(droppedPictureType(new Uint8Array([1, 2, 3]))).toBeUndefined();
+  });
+
+  it("passes the dropped files on as the owner's message, with no words needed", async () => {
+    const t = await started((text) => `（在桌宠里说）${text}`);
+    const image = { mimeType: "image/png", data: PNG };
+    await t.feed.say("", { images: [image] });
+    await t.feed.say("看看这个", { lines: ["[主人拖来文件「a.pdf」：/tmp/a.pdf]"] });
+    expect(t.inbound).toEqual([
+      { kind: "message", text: "", from: "owner", images: [image] },
+      { kind: "message", text: "看看这个\n[主人拖来文件「a.pdf」：/tmp/a.pdf]", from: "owner" },
+    ]);
+    await expect(t.feed.say("  ", { images: [], lines: [] })).rejects.toThrow("说点什么再发送");
   });
 });

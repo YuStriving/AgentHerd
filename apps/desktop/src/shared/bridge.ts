@@ -2,6 +2,7 @@
 // The renderer has no Node access; every call goes main → host over the local API socket.
 
 import type { HostEvent, RemoteHost } from "@agentherd/host/api";
+import type { PetArm, ShortcutState } from "./pet-shortcuts.ts";
 
 export interface PetRegion {
   x: number;
@@ -44,6 +45,21 @@ export interface PetBridge {
    * (ADR 0075). Missing in older builds.
    */
   readImage?(path: string): Promise<string | undefined>;
+  /** Where a file dropped on the pet is on disk; "" when it has no path (ADR 0082). */
+  pathOf?(file: File): string;
+  /**
+   * Main asks the pet to open its panel on a page: a notification or the menu bar was clicked
+   * (ADR 0079). Returns an unsubscribe function. Missing in older builds.
+   */
+  onShow?(listener: (tab: "chat" | "tasks" | "cards") => void): () => void;
+  /** What the approve shortcut did: armed an approval, allowed it, or found none (ADR 0080). */
+  onArm?(listener: (arm: PetArm) => void): () => void;
+  /** The owner let the armed approval go (Esc): the next press picks it again. */
+  disarm?(): void;
+  /** The cursor is on the figure or the panel is open: a figure tucked at the edge comes out. */
+  peek?(on: boolean): void;
+  /** The pet has something for the owner: it floats above other windows while on top is "busy". */
+  float?(on: boolean): void;
 }
 
 export interface Bridge {
@@ -53,6 +69,15 @@ export interface Bridge {
   onEvent(listener: (event: HostEvent) => void): () => void;
   /** Whether main is connected to the host process. */
   onConnection(listener: (connected: boolean) => void): () => void;
+  /**
+   * The pet's global shortcuts (ADR 0080): which work, and a pause while the settings page records
+   * a new one. Missing in older builds.
+   */
+  shortcuts?: {
+    state(): Promise<ShortcutState>;
+    onState(listener: (state: ShortcutState) => void): () => void;
+    pause(paused: boolean): void;
+  };
   /** The pet asked the main window to show a task. Returns an unsubscribe function. */
   onOpenTask?(listener: (taskId: string) => void): () => void;
 }

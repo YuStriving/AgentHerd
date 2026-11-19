@@ -1,0 +1,29 @@
+import { describe, expect, it } from "vitest";
+import { EDGE_GAP, edgeOf, peekRight, TUCK_SHOW, tuckedX } from "../src/shared/pet-edge.ts";
+
+const area = { x: 0, y: 25, width: 1512, height: 920 };
+// The figure inside a 150-wide window, at its right.
+const stage = { x: 40, y: 30, width: 110, height: 120 };
+
+describe("tucking the pet at a screen edge (ADR 0080)", () => {
+  it("tucks only when more than a third of the figure is past the left or right edge", () => {
+    expect(edgeOf({ x: 1450, y: 600, width: 110, height: 120 }, area)).toBe("right");
+    expect(edgeOf({ x: 1420, y: 600, width: 110, height: 120 }, area)).toBeUndefined();
+    expect(edgeOf({ x: -40, y: 600, width: 110, height: 120 }, area)).toBe("left");
+    expect(edgeOf({ x: -20, y: 600, width: 110, height: 120 }, area)).toBeUndefined();
+    expect(edgeOf({ x: 600, y: 600, width: 110, height: 120 }, area)).toBeUndefined();
+  });
+
+  it("shows a strip while tucked and the whole figure inside the edge when it peeks", () => {
+    // Right edge: the figure's left TUCK_SHOW pixels show.
+    const xr = tuckedX("right", stage, area);
+    expect(area.x + area.width - (xr + stage.x)).toBe(TUCK_SHOW);
+    const rr = peekRight("right", stage, 150, area);
+    expect(rr - 150 + stage.x + stage.width).toBe(area.x + area.width - EDGE_GAP);
+    // Left edge: the figure's right TUCK_SHOW pixels show.
+    const xl = tuckedX("left", stage, area);
+    expect(xl + stage.x + stage.width - area.x).toBe(TUCK_SHOW);
+    const rl = peekRight("left", stage, 150, area);
+    expect(rl - 150 + stage.x).toBe(area.x + EDGE_GAP);
+  });
+});

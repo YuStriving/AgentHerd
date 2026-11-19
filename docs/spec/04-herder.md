@@ -149,6 +149,10 @@ later task gets and which counts as the owner allowing that step.
   whole turns itself (never the current one); a "context too long" error folds about half and
   retries once
   ([ADR 0045](../adr/0045-herder-context-folded-by-the-model.md)).
+- No single input fills it: the owner's message goes in up to 8,000 characters (the whole is saved
+  under `attachments` and the message says where), a task's reply up to 12,000, a report, event or
+  new-work item up to 4,000; each cut says how much was left out. Files dropped on the pet come as
+  paths, read by tasks, not by the Herder ([ADR 0083](../adr/0083-the-herder-reads-bounded-input.md)).
 - Tasks are saved in `herd.db` and come back after a restart as ended tasks. `session_prompt` to an
   ended task starts its agent again in the same folder with the same model; Pi reopens its own
   session, other agents get the earlier conversation as text ([ADR 0039](../adr/0039-tasks-kept-and-continued.md)).
@@ -205,6 +209,11 @@ board.
 | `stuck` | Watchdog alarm, or last report `blocked` |
 | `done` | Last report `ready`, or `dropped` |
 | `failed` | Last report `failed`, or the session ended with an error |
+
+A task that is `needs-owner` because of its own `waiting` report (not an open approval) and has
+not changed for 30 minutes is asked about once: 「还要做 / 不做了」. 还要做 sends it back to redo what
+went stale and tell the owner what to do; 不做了, or no answer for a day, stops it as `failed`.
+停止 on a task that ended while it waited does the same ([ADR 0081](../adr/0081-a-waiting-task-asks-whether-it-still-matters.md)).
 
 ### Watchdog
 

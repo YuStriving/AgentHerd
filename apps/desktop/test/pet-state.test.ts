@@ -1,6 +1,7 @@
 import type { PetCard, PetView, TasksView } from "@agentherd/host/api";
 import { describe, expect, it } from "vitest";
 import {
+  addDrops,
   badgeOf,
   CHAT_DEFAULT,
   CHAT_MIN,
@@ -33,7 +34,10 @@ import {
   separatorOf,
   statusOf,
   stepOf,
+  suggestionFor,
+  TASK_DOTS_MAX,
   TASKS_ENDED_MS,
+  taskDots,
   taskGroups,
   trailingLine,
 } from "../src/renderer/src/pet/pet-state";
@@ -437,5 +441,66 @@ describe("the pet's pages (ADR 0078)", () => {
     ]);
     expect(waiting.map((c) => c.ref)).toEqual(["b", "d"]);
     expect(recent.map((c) => c.ref)).toEqual(["e", "c", "a"]);
+  });
+});
+
+describe("task dots and dropped files (ADR 0082)", () => {
+  const NOW_AT = Date.UTC(2026, 10, 19, 12, 0);
+  const task = (id: string, stage: TasksView["tasks"][number]["stage"], updated: number) => ({
+    id,
+    title: `任务 ${id}`,
+    project: "demo",
+    agent: "Pi",
+    stage,
+    lastReport: "",
+    startedAt: new Date(NOW_AT - (updated + 10) * 60_000).toISOString(),
+    updatedAt: new Date(NOW_AT - updated * 60_000).toISOString(),
+    automaticDecisions: [],
+  });
+
+  it("puts one dot per running task over the pet, waiting ones first", () => {
+    const { dots, more } = taskDots(
+      [
+        task("w", "working", 1),
+        task("n", "needs-owner", 30),
+        task("s", "stuck", 3),
+        task("d", "done", 2),
+        task("q", "queued", 0),
+      ],
+      NOW_AT,
+    );
+    expect(dots.map((d) => [d.id, d.tone])).toEqual([
+      ["n", "amber"],
+      ["s", "red"],
+      ["w", "blue"],
+      ["q", "gray"],
+    ]);
+    expect(dots[0]?.label).toBe("任务 n · 等你");
+    expect(more).toBe(0);
+    const many = Array.from({ length: TASK_DOTS_MAX + 2 }, (_, i) => task(`t${i}`, "working", i));
+    expect(taskDots(many, NOW_AT).more).toBe(2);
+    expect(taskDots([], NOW_AT).dots).toEqual([]);
+  });
+
+  it("keeps dropped files once each, up to the limit, with their names", () => {
+    const first = addDrops([], ["/Users/me/Desktop/screen.PNG", "", "C:\\docs\\plan.pdf"], 3);
+    expect(first).toEqual([
+      { path: "/Users/me/Desktop/screen.PNG", name: "screen.PNG", picture: true },
+      { path: "C:\\docs\\plan.pdf", name: "plan.pdf", picture: false },
+    ]);
+    const next = addDrops(first, ["/Users/me/Desktop/screen.PNG", "/a/b/", "/c"], 3);
+    expect(next.map((d) => d.name)).toEqual(["screen.PNG", "plan.pdf", "b"]);
+  });
+});
+
+describe("guessing the owner's next message (ADR 0084)", () => {
+  it("shows the guess only in an empty input while the chat is up", () => {
+    const view = { suggestion: " 把 b 下载下来 " };
+    expect(suggestionFor(view, "", 0, false)).toBe("把 b 下载下来");
+    expect(suggestionFor(view, "把", 0, false)).toBeUndefined();
+    expect(suggestionFor(view, "", 1, false)).toBeUndefined();
+    expect(suggestionFor(view, "", 0, true)).toBeUndefined();
+    expect(suggestionFor({}, "", 0, false)).toBeUndefined();
+    expect(suggestionFor({ suggestion: "  " }, "", 0, false)).toBeUndefined();
   });
 });

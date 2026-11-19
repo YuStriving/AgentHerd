@@ -19,6 +19,7 @@
 // The pet window (/pet.html, ADR 0070) uses the same bridge; `?pet=` picks what it shows:
 //   waiting          an approval waits for the owner
 //   done             a task just finished
+// `&arm=1` with `?pet=waiting` shows the approve shortcut's first press (ADR 0080).
 
 import type {
   AgentView,
@@ -42,6 +43,7 @@ import type {
   WestockTest,
   WestockView,
 } from "@agentherd/host/api";
+import { DEFAULT_PET } from "@agentherd/host/api";
 import { HERD_UI_TARGET, herdUiChoices, herdUiFence } from "@agentherd/protocol/herd-ui";
 import type { Bridge } from "../../shared/bridge";
 import {
@@ -101,7 +103,13 @@ function installFakeBridge(): void {
     locale: "zh-CN",
     keepAwake: true,
     profiles: sim === "no-agent" ? [] : ["pi"],
-    pet: { on: true, figure: "deepseek" },
+    // `?quiet=1`: the pet keeps quiet (ADR 0079).
+    pet: {
+      ...DEFAULT_PET,
+      ...(new URLSearchParams(location.search).get("quiet") === "1"
+        ? { quietUntil: new Date(Date.now() + 3_600_000).toISOString() }
+        : {}),
+    },
   };
 
   const petSim = new URLSearchParams(window.location.search).get("pet");
@@ -331,6 +339,8 @@ function installFakeBridge(): void {
     last: petHistory.at(-1),
     history: petHistory,
     cards: petCards,
+    // The Herder's guess at the next message (ADR 0084).
+    suggestion: "把第二家的地址也发我",
     pending:
       petSim === "waiting"
         ? [
@@ -623,12 +633,20 @@ function installFakeBridge(): void {
       return delay(lark);
     },
     pet: () => delay(pet),
-    petSay: (text) => {
+    petSay: (text, paths = []) => {
       if (!pet.connected)
         return Promise.reject(new Error("AgentHerd 还没连上飞书，先在 App 里设置好"));
-      petLine({ kind: "owner", text });
+      const files = paths.map((p) => `[主人拖来文件「${p.split("/").at(-1)}」：${p}]`);
+      const said = [text, ...files].filter((x) => x !== "").join("\n");
+      petLine({ kind: "owner", text: said });
+      const { suggestion: _gone, ...rest } = pet;
+      pet = rest;
       emit({ topic: "pet", data: structuredClone(pet) });
-      setTimeout(() => petSays({ kind: "say", text: `收到：「${text}」。我这就去办。` }), 1200);
+      setTimeout(() => petSays({ kind: "say", text: `收到：「${said}」。我这就去办。` }), 1200);
+      setTimeout(() => {
+        pet = { ...pet, suggestion: "好，做完告诉我" };
+        emit({ topic: "pet", data: structuredClone(pet) });
+      }, 2400);
       return delay(pet);
     },
     petPress: (target, action) => {
@@ -1085,6 +1103,34 @@ function installFakeBridge(): void {
       openApp: () => {},
       openFile: (path) => console.info("[AgentHerd] open", path),
       readImage: async (path) => (path.includes("missing") ? undefined : fakePicture()),
+      pathOf: (file) => `/Users/me/Desktop/${file.name}`,
+      onArm: (listener) => {
+        if (new URLSearchParams(location.search).get("arm") !== "1") return () => {};
+        const timer = setTimeout(
+          () =>
+            listener({
+              kind: "arm",
+              approval: {
+                target: "item-1",
+                title: "运行 rm -rf ./logs/*",
+                task: "清理旧日志",
+                ref: "fake:m9",
+              },
+              until: Date.now() + 600_000,
+              key: "⌘⇧Y",
+            }),
+          800,
+        );
+        return () => clearTimeout(timer);
+      },
+      disarm: () => {},
+      peek: () => {},
+      float: () => {},
+    },
+    shortcuts: {
+      state: async () => ({ talk: "ok", approve: "ok" }),
+      onState: () => () => {},
+      pause: () => {},
     },
     onEvent: (listener) => {
       eventListeners.add(listener);

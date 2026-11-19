@@ -2,8 +2,9 @@
 
 import type { HostEvent, HostMethod, RemoteHost } from "@agentherd/host/api";
 import { HOST_METHODS } from "@agentherd/host/api";
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { Bridge } from "../shared/bridge.ts";
+import type { PetArm, ShortcutState } from "../shared/pet-shortcuts.ts";
 
 const host = Object.fromEntries(
   HOST_METHODS.map((method: HostMethod) => [
@@ -33,12 +34,35 @@ const bridge: Bridge = {
     openApp: (taskId) => ipcRenderer.send("pet:open-app", taskId),
     openFile: (path) => ipcRenderer.send("pet:open-file", path),
     readImage: (path) => ipcRenderer.invoke("pet:read-image", path),
+    pathOf: (file) => webUtils.getPathForFile(file),
+    onShow(listener) {
+      const handler = (_e: unknown, tab: "chat" | "tasks" | "cards") => listener(tab);
+      ipcRenderer.on("pet:show", handler);
+      return () => ipcRenderer.removeListener("pet:show", handler);
+    },
+    onArm(listener) {
+      const handler = (_e: unknown, arm: PetArm) => listener(arm);
+      ipcRenderer.on("pet:arm", handler);
+      return () => ipcRenderer.removeListener("pet:arm", handler);
+    },
+    disarm: () => ipcRenderer.send("pet:disarm"),
+    peek: (on) => ipcRenderer.send("pet:peek", on),
+    float: (on) => ipcRenderer.send("pet:float", on),
   },
   onConnection(listener) {
     const handler = (_e: unknown, connected: boolean) => listener(connected);
     ipcRenderer.on("host:connection", handler);
     void ipcRenderer.invoke("host:connected").then((c: boolean) => listener(c));
     return () => ipcRenderer.removeListener("host:connection", handler);
+  },
+  shortcuts: {
+    state: () => ipcRenderer.invoke("app:shortcuts") as Promise<ShortcutState>,
+    onState(listener) {
+      const handler = (_e: unknown, state: ShortcutState) => listener(state);
+      ipcRenderer.on("app:shortcuts", handler);
+      return () => ipcRenderer.removeListener("app:shortcuts", handler);
+    },
+    pause: (paused) => ipcRenderer.send("app:pause-shortcuts", paused),
   },
   onOpenTask(listener) {
     const handler = (_e: unknown, taskId: string) => listener(taskId);

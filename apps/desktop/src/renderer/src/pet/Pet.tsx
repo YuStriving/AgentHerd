@@ -6,8 +6,16 @@
 // Its top-left corner and edges resize it. Drag the figure anywhere; the small button folds it
 // into a dot, which counts what came meanwhile.
 
-import type { PetCard, PetFigure, PetView, TasksView } from "@agentherd/host/api";
 import {
+  PET_DROP_MAX,
+  type PetCard,
+  type PetFigure,
+  type PetSettings,
+  type PetView,
+  type TasksView,
+} from "@agentherd/host/api";
+import {
+  type DragEvent,
   Fragment,
   type KeyboardEvent,
   type PointerEvent,
@@ -17,16 +25,20 @@ import {
   useState,
 } from "react";
 import type { PetRegion } from "../../../shared/bridge";
+import { isQuiet, quietLine } from "../../../shared/pet-notify";
+import type { PetArm } from "../../../shared/pet-shortcuts";
 import { devOpen } from "../dev-bridge";
 import { FIGURES } from "./figures";
 import { CardView, TaskCard } from "./PetCards";
 import { LineView, Separator } from "./PetConversation";
 import {
+  addDrops,
   badgeOf,
   CHAT_DEFAULT,
   type ChatSize,
   cardGroups,
   conversationOf,
+  type Drop,
   dragChat,
   type Entry,
   FLASH_MS,
@@ -44,6 +56,8 @@ import {
   remainingSays,
   separatorOf,
   statusOf,
+  suggestionFor,
+  taskDots,
   taskGroups,
 } from "./pet-state";
 import { ANIMATIONS, ATLAS, CELL, type Clip, frameAt, HELLO_MS } from "./sprite";
@@ -117,6 +131,10 @@ export function Pet() {
     cards: [],
   });
   const [figure, setFigure] = useState<PetFigure>("deepseek");
+  /** Quiet hours and snoozes (ADR 0079); undefined from an older host. */
+  const [settings, setSettings] = useState<PetSettings>();
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const [tasks, setTasks] = useState<Task[]>([]);
   const working = countWorking(tasks);
   const [online, setOnline] = useState(true);
@@ -130,10 +148,15 @@ export function Pet() {
   /** Lines that came while the pet was folded. */
   const [unread, setUnread] = useState(0);
   const [draft, setDraft] = useState("");
+  // Files dropped on the pet, sent with the next message (ADR 0082).
+  const [drops, setDrops] = useState<Drop[]>([]);
+  const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pendingSays, setPendingSays] = useState<PendingSay[]>([]);
   const nextSayId = useRef(-1);
   const [note, setNote] = useState<string>();
+  /** What the approve shortcut did, shown above the input (ADR 0080). */
+  const [arm, setArm] = useState<PetArm>();
   const [hello, setHello] = useState(false);
   const [chat, setChat] = useState<ChatSize>(() => readChatSize(localStorage.getItem(CHAT_KEY)));
   const [tab, setTabState] = useState<PetTab>(() => readTab(localStorage.getItem(TAB_KEY)));
@@ -184,9 +207,11 @@ export function Pet() {
       setLastActive(t);
       setNote(undefined);
       // Shown in full at once; a folded pet only counts it. A closed panel opens on the
-      // conversation; an open one on another page counts it on the 对话 tab (ADR 0078).
-      if (folded.current) setUnread((n) => n + 1);
-      else {
+      // conversation; an open one on another page counts it on the 对话 tab (ADR 0078). While
+      // the owner wants quiet, a closed panel stays closed and only counts it (ADR 0079).
+      if (folded.current || (!openRef.current && isQuiet(settingsRef.current, new Date()))) {
+        setUnread((n) => n + 1);
+      } else {
         if (!openRef.current) {
           setTabState("chat");
           localStorage.setItem(TAB_KEY, "chat");
@@ -197,28 +222,74 @@ export function Pet() {
     h.pet()
       .then((v) => apply(v, true))
       .catch(() => undefined);
+    const onStatus = (s: { pet?: PetSettings }) => {
+      setFigure(s.pet?.figure ?? "deepseek");
+      setSettings(s.pet);
+    };
     h.status()
-      .then((s) => setFigure(s.pet?.figure ?? "deepseek"))
+      .then(onStatus)
       .catch(() => undefined);
     h.tasks()
       .then((t) => setTasks(t.tasks))
       .catch(() => undefined);
     const offEvent = bridge.onEvent((e) => {
       if (e.topic === "pet") apply(e.data, false);
-      else if (e.topic === "status") setFigure(e.data.pet?.figure ?? "deepseek");
+      else if (e.topic === "status") onStatus(e.data);
       else if (e.topic === "tasks") {
         setTasks(e.data.tasks);
         setLastActive(Date.now());
       }
     });
     const offConnection = bridge.onConnection(setOnline);
+    // A notification or the menu bar was clicked: the panel opens on that page (ADR 0079).
+    const offShow = bridge.pet?.onShow?.((next) => {
+      setCollapsed(false);
+      folded.current = false;
+      localStorage.setItem(COLLAPSED_KEY, "0");
+      setTabState(next);
+      localStorage.setItem(TAB_KEY, next);
+      if (next === "chat") setChatUnread(0);
+      setOpen(true);
+      if (next === "chat") setTimeout(() => inputEl.current?.focus(), 60);
+    });
     const tick = setInterval(() => setNow(Date.now()), 1000);
     return () => {
       offEvent();
       offConnection();
+      offShow?.();
       clearInterval(tick);
     };
   }, []);
+
+  // The approve shortcut (ADR 0080): main tells what it armed or did; the line goes away when
+  // the second press can no longer allow, or after a moment for the rest.
+  useEffect(() => bridge.pet?.onArm?.(setArm), []);
+  useEffect(() => {
+    if (arm === undefined) return;
+    const ms = arm.kind === "arm" ? Math.max(0, arm.until - Date.now()) : 3500;
+    const timer = setTimeout(() => setArm(undefined), ms);
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== "Escape" || arm.kind !== "arm") return;
+      e.stopPropagation();
+      bridge.pet?.disarm?.();
+      setArm(undefined);
+    };
+    window.addEventListener("keydown", onKey, true);
+    if (arm.kind === "arm") {
+      requestAnimationFrame(() =>
+        document.querySelector(".pet-cardwrap.armed")?.scrollIntoView({ block: "nearest" }),
+      );
+    }
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [arm]);
+
+  // Whatever came while the panel was closed is seen once it opens.
+  useEffect(() => {
+    if (open) setUnread(0);
+  }, [open]);
 
   // Plays the clip's frames on the figure. Writes the style directly: no React render per frame.
   const clip: Clip = hello ? "hello" : mood;
@@ -433,28 +504,39 @@ export function Pet() {
 
   const send = async () => {
     const text = draft.trim();
-    if (text === "" || offline) return;
+    const sending = drops;
+    if ((text === "" && sending.length === 0) || offline) return;
     // What the owner says shows in the conversation.
     setTab("chat");
     const id = nextSayId.current--;
     const afterId = view.history.at(-1)?.id ?? 0;
     const prevLastId = view.last?.id;
-    const entry: PendingSay = { id, at: new Date().toISOString(), text, afterId };
+    const shown = [text, ...sending.map((d) => `${d.picture ? "🖼️" : "📎"} ${d.name}`)]
+      .filter((x) => x !== "")
+      .join("\n");
+    const entry: PendingSay = { id, at: new Date().toISOString(), text: shown, afterId };
     setDraft("");
+    setDrops([]);
     setPendingSays((prev) => [...prev, entry]);
     setNote("已发给主管，等它回复…");
     inputEl.current?.focus();
     try {
-      const next = await bridge.host.petSay(text);
+      const next = await bridge.host.petSay(
+        text,
+        sending.map((d) => d.path),
+      );
       setView(next);
       setPendingSays((prev) => {
-        const directReply = text.startsWith("/") || next.last?.id !== prevLastId;
+        // With files the stored line reads differently, so it is not waited for.
+        const directReply =
+          sending.length > 0 || text.startsWith("/") || next.last?.id !== prevLastId;
         const filtered = directReply ? prev.filter((p) => p.id !== id) : prev;
         return remainingSays(filtered, next.history);
       });
     } catch (error) {
       setPendingSays((prev) => prev.filter((p) => p.id !== id));
       setDraft((cur) => (cur === "" ? text : cur));
+      setDrops((cur) => (cur.length === 0 ? sending : cur));
       setNote(errorText(error));
     }
   };
@@ -494,6 +576,12 @@ export function Pet() {
   };
 
   const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    // Tab takes the Herder's guess at what the owner says next; it is never sent by itself (ADR 0084).
+    if (e.key === "Tab" && suggestion !== undefined && !e.shiftKey) {
+      e.preventDefault();
+      setDraft(suggestion);
+      return;
+    }
     if (e.key === "Enter" && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) {
       e.preventDefault();
       void send();
@@ -503,7 +591,19 @@ export function Pet() {
 
   const atlas = FIGURES[figure].atlas;
   const offline = !online || !view.connected;
+  const suggestion = suggestionFor(view, draft, drops.length, offline);
   const badge = badgeOf(view.pending.length, unread);
+  const quiet = quietLine(settings, new Date(now));
+  // A figure tucked at a screen edge comes out while the cursor is on it or its panel is open,
+  // and the pet floats above other windows while it has something for the owner (ADR 0080).
+  const peek = hover || shown;
+  const busyForOwner = shown || badge > 0 || arm?.kind === "arm";
+  useEffect(() => {
+    bridge.pet?.peek?.(peek);
+  }, [peek]);
+  useEffect(() => {
+    bridge.pet?.float?.(busyForOwner);
+  }, [busyForOwner]);
   const openFile = (path: string) => bridge.pet?.openFile(path);
   const actions = {
     busy,
@@ -513,14 +613,52 @@ export function Pet() {
     openFile,
   };
 
+  // Files dragged onto the pet wait above the input until sent (ADR 0082).
+  const hasFiles = (e: DragEvent<HTMLElement>) => [...e.dataTransfer.types].includes("Files");
+  const dropZone = {
+    onDragEnter: (e: DragEvent<HTMLElement>) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      setDragging(true);
+    },
+    onDragOver: (e: DragEvent<HTMLElement>) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    },
+    onDragLeave: (e: DragEvent<HTMLElement>) => {
+      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+      setDragging(false);
+    },
+    onDrop: (e: DragEvent<HTMLElement>) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      setDragging(false);
+      const paths = [...e.dataTransfer.files].map((f) => bridge.pet?.pathOf?.(f) ?? "");
+      const next = addDrops(drops, paths, PET_DROP_MAX);
+      if (paths.some((p) => p === "")) setNote("有的东西没有文件路径，拖不进来");
+      else if (next.length - drops.length < new Set(paths).size)
+        setNote(`一次最多带 ${PET_DROP_MAX} 个文件`);
+      else setNote(undefined);
+      setDrops(next);
+      if (folded.current) fold(false);
+      setTab("chat");
+      setOpen(true);
+      inputEl.current?.focus();
+    },
+  };
+  const rootClass = dragging ? "pet-root pet-dragging" : "pet-root";
+
   if (collapsed) {
     return (
-      <div ref={root} className="pet-root">
+      <div ref={root} className={rootClass} {...dropZone}>
         <button
           type="button"
           className="pet-dot"
           aria-label="展开桌宠"
-          title="展开"
+          onMouseEnter={() => setHover(true)}
+          onMouseLeave={() => setHover(false)}
+          title={quiet === undefined ? "展开" : `展开（${quiet}）`}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={() => finishDrag(() => fold(false))}
@@ -601,8 +739,13 @@ export function Pet() {
         {taskPage.ended.map(taskView)}
       </>
     );
+  const armedRef = arm?.kind === "arm" ? arm.approval.ref : undefined;
   const cardView = (card: PetCard) => (
-    <div key={card.ref} className="pet-cardwrap" data-open={card.open ? "1" : "0"}>
+    <div
+      key={card.ref}
+      className={card.ref === armedRef ? "pet-cardwrap armed" : "pet-cardwrap"}
+      data-open={card.open ? "1" : "0"}
+    >
       <CardView card={card} actions={actions} />
     </div>
   );
@@ -629,11 +772,42 @@ export function Pet() {
       </button>
     );
 
+  const armLine =
+    arm === undefined ? undefined : arm.kind === "arm" ? (
+      <div className="pet-arm">
+        再按一次 <kbd>{arm.key}</kbd> 同意：{arm.approval.title}
+        <span className="pet-arm-hint">Esc 取消</span>
+      </div>
+    ) : arm.kind === "none" ? (
+      <div className="pet-arm quiet">现在没有等你同意的事</div>
+    ) : arm.kind === "done" ? (
+      <div className="pet-arm done">已同意：{arm.approval.title}</div>
+    ) : (
+      <div className="pet-arm bad">没能同意：{arm.message}</div>
+    );
+
   const talk = (
     <div className="pet-talk">
-      {waiting}
+      {armLine}
+      {arm?.kind !== "arm" && waiting}
       {offline && <div className="pet-note">AgentHerd 还没连上飞书，先在 App 里设置好。</div>}
       {note !== undefined && <div className="pet-note">{note}</div>}
+      {drops.length > 0 && (
+        <div className="pet-drops">
+          {drops.map((d) => (
+            <span key={d.path} className="pet-drop" title={d.path}>
+              {d.picture ? "🖼️" : "📎"} {d.name}
+              <button
+                type="button"
+                aria-label={`去掉 ${d.name}`}
+                onClick={() => setDrops((cur) => cur.filter((x) => x.path !== d.path))}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="pet-input-row">
         <input
           ref={inputEl}
@@ -641,16 +815,34 @@ export function Pet() {
           autoFocus
           value={draft}
           disabled={offline}
-          placeholder={offline ? "连上飞书后才能说话" : "跟主管说…"}
+          placeholder={
+            offline
+              ? "连上飞书后才能说话"
+              : (suggestion ??
+                (drops.length > 0 ? "说点什么，或直接发送" : "跟主管说…（可以把文件拖到我身上）"))
+          }
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKey}
         />
+        {suggestion !== undefined && (
+          <button
+            type="button"
+            className="pet-suggest"
+            title="主管猜你接下来想说这句：按 Tab 或点这里填进去，不会直接发送"
+            onClick={() => {
+              setDraft(suggestion);
+              inputEl.current?.focus();
+            }}
+          >
+            Tab
+          </button>
+        )}
         <button
           type="button"
           className="pet-send"
           aria-label="发送"
           title="发送（回车）"
-          disabled={offline || draft.trim() === ""}
+          disabled={offline || (draft.trim() === "" && drops.length === 0)}
           onClick={() => void send()}
         >
           ↑
@@ -659,8 +851,29 @@ export function Pet() {
     </div>
   );
 
+  const dotView = taskDots(tasks, now);
+  const dots =
+    dotView.dots.length === 0 ? undefined : (
+      <div className="pet-dots">
+        {dotView.dots.map((dot) => (
+          <button
+            key={dot.id}
+            type="button"
+            className={`pet-dot-task ${dot.tone}`}
+            title={dot.label}
+            aria-label={dot.label}
+            onClick={() => {
+              setTab("tasks");
+              setOpen(true);
+            }}
+          />
+        ))}
+        {dotView.more > 0 && <span className="pet-dot-more">+{dotView.more}</span>}
+      </div>
+    );
+
   return (
-    <div ref={root} className="pet-root">
+    <div ref={root} className={rootClass} {...dropZone}>
       {open && (
         <div className="pet-bubble pet-chat" ref={panelEl} style={{ width: size.width }}>
           {grip("top")}
@@ -782,7 +995,13 @@ export function Pet() {
             backgroundSize: `${W * ATLAS.columns}px ${H * ATLAS.rows}px`,
           }}
         />
-        {view.pending.length > 0 && <span className="pet-badge">{view.pending.length}</span>}
+        {badge > 0 && <span className="pet-badge">{badge}</span>}
+        {dots}
+        {quiet !== undefined && (
+          <span className="pet-moon" title={quiet} role="img" aria-label={quiet}>
+            🌙
+          </span>
+        )}
         {mood === "sleeping" && (
           <span className="pet-zz" aria-hidden="true">
             <i>z</i>

@@ -43,6 +43,7 @@ export type {
   HerderFactory,
   HerderHost,
   HerderPort,
+  HerderSuggestion,
   HerderTurnRole,
   OwnerImage,
   VoiceRequest,
@@ -140,6 +141,7 @@ export {
   noticeLevels,
   setNoticeLevel,
 } from "./notices.ts";
+export { OWNER_TEXT_MAX } from "./owner-commands.ts";
 export {
   ACK_WORDS_MAX,
   cutWords,
@@ -216,5 +218,14 @@ export {
 export type { StageInput, Task } from "./tasks.ts";
 export { projectName, sortForBoard, stageOf, TITLE_MAX_CHARS, taskTitle } from "./tasks.ts";
 export { CORE_TEXTS, type CoreTexts, coreTexts } from "./texts.ts";
+export {
+  WAIT_ASK_MINUTES,
+  WAIT_GIVE_UP_HOURS,
+  WAIT_STATE_KEY,
+  WAIT_TARGET,
+  type WaitEntry,
+  WaitWatch,
+  waitedFor,
+} from "./waiting.ts";
 export type { Alarm, AlarmReason, WatchdogOptions } from "./watchdog.ts";
 export { MAX_QUIET_MINUTES, REPEAT_LIMIT, WATCHDOG_SECONDS, Watchdog } from "./watchdog.ts";

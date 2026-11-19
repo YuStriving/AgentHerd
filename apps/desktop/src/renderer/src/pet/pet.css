@@ -725,6 +725,51 @@ body {
   background: var(--pet-amber);
 }
 
+/* The approve shortcut's line above the input (ADR 0080). */
+.pet-arm {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 2px 6px;
+  color: #c93400;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pet-arm kbd {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--pet-control);
+  color: var(--pet-ink);
+  font: inherit;
+  font-weight: 600;
+}
+
+.pet-arm-hint {
+  margin-left: auto;
+  color: var(--pet-muted);
+}
+
+.pet-arm.quiet {
+  color: var(--pet-muted);
+}
+
+.pet-arm.done {
+  color: #248a3d;
+}
+
+.pet-arm.bad {
+  color: #d70015;
+}
+
+/* The approval the next press allows. */
+.pet-cardwrap.armed {
+  border-radius: 12px;
+  outline: 2px solid var(--pet-amber);
+  outline-offset: 2px;
+}
+
 .pet-input-row {
   display: flex;
   align-items: center;
@@ -749,6 +794,27 @@ body {
   font: inherit;
   outline: none;
   user-select: text;
+}
+
+/* The Herder's guess at the next message: Tab or a click puts it in the input (ADR 0084). */
+.pet-suggest {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--pet-line);
+  border-radius: 5px;
+  background: none;
+  color: var(--pet-muted);
+  font:
+    11px / 16px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  cursor: pointer;
+}
+
+.pet-suggest:hover {
+  color: var(--pet-ink);
+  border-color: var(--pet-muted);
 }
 
 .pet-send {
@@ -1213,4 +1279,98 @@ body {
   .pet-root .pet-bubble {
     animation: none;
   }
+}
+
+/* Quiet hours or a snooze (ADR 0079): a small moon by the figure. */
+.pet-moon {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  font-size: 14px;
+  line-height: 1;
+  pointer-events: auto;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25));
+}
+
+/* One dot per running task over the pet's head (ADR 0082); a click opens the 任务 page. */
+.pet-dots {
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 5px;
+  border-radius: 8px;
+  background: var(--pet-bg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  transform: translateX(-50%);
+}
+
+.pet-dot-task {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--pet-muted);
+  cursor: pointer;
+}
+
+.pet-dot-task.blue {
+  background: var(--pet-accent);
+}
+
+.pet-dot-task.amber {
+  background: var(--pet-amber);
+}
+
+.pet-dot-task.red {
+  background: var(--pet-red);
+}
+
+.pet-dot-more {
+  color: var(--pet-muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* Files dragged over the pet (ADR 0082). */
+.pet-dragging .pet-figure {
+  filter: drop-shadow(0 0 6px rgba(0, 124, 247, 0.8));
+}
+
+.pet-dragging .pet-bubble {
+  outline: 2px dashed var(--pet-accent);
+  outline-offset: -2px;
+}
+
+.pet-drops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pet-drop {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 4px 2px 8px;
+  border-radius: 10px;
+  background: var(--pet-control);
+  color: var(--pet-ink);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pet-drop button {
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--pet-muted);
+  font-size: 13px;
+  cursor: pointer;
 }

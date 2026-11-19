@@ -5,39 +5,70 @@
 import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { HostEvent, HostMethod } from "@agentherd/host/api";
+import type {
+  HostEvent,
+  HostMethod,
+  HostStatus,
+  PetSettings,
+  PetView,
+  TasksView,
+} from "@agentherd/host/api";
 import { HOST_METHODS } from "@agentherd/host/api";
 import { connectHost, type HostClient, socketPath } from "@agentherd/host/server";
-import {
-  app,
-  BrowserWindow,
-  ipcMain,
-  Menu,
-  nativeImage,
-  nativeTheme,
-  powerSaveBlocker,
-  shell,
-  Tray,
-} from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, powerSaveBlocker, shell } from "electron";
+import type { Notice, NoticeTab } from "../shared/pet-notify.ts";
+import { ApproveKey, type PetArm, shortcutLabel } from "../shared/pet-shortcuts.ts";
 import { ensureHost, ownsHost, stopOwnedHost } from "./host-process.ts";
+import { MenuBar } from "./menu-bar.ts";
+import { Notifier } from "./notifier.ts";
 import { PetWindow } from "./pet-window.ts";
+import { Shortcuts } from "./shortcuts.ts";
 
 app.setName("AgentHerd");
 app.setAppUserModelId("com.agentherd.desktop");
 app.setAboutPanelOptions({ applicationName: "AgentHerd", copyright: "MIT License" });
 
 const APP_ICON = join(import.meta.dirname, "../../resources/icon.png");
+/** Black on clear, so macOS tints it for a light or dark menu bar (ADR 0079). */
+const MENU_BAR_ICON = join(import.meta.dirname, "../../resources/trayTemplate.png");
 const home = process.env.AGENTHERD_HOME ?? join(homedir(), ".agentherd");
 const sock = socketPath(home);
 
 let win: BrowserWindow | undefined;
-let tray: Tray | undefined;
+/** The menu bar icon on macOS, the tray icon on Windows (ADR 0079). */
+let menuBar: MenuBar | undefined;
 let client: HostClient | undefined;
 let connected = false;
 let keepAwakeId: number | undefined;
 let quitting = false;
 /** Made once the app is ready (it needs the screen). */
 let pet: PetWindow | undefined;
+let petSettings: PetSettings | undefined;
+/** The pet's view as the host last sent it: what the approve shortcut answers (ADR 0080). */
+let petView: PetView | undefined;
+const approveKey = new ApproveKey();
+
+/** System notifications for what waits for the owner and what tasks finished (ADR 0079). */
+const notifier = new Notifier({
+  press: (target, action) => {
+    void client?.host.petPress(target, action).catch((error: Error) => {
+      console.error(`[desktop] notification answer: ${error.message}`);
+    });
+  },
+  open: (notice) => showNotice(notice),
+  // An AgentHerd window has the keyboard: the owner sees it already.
+  looking: () => BrowserWindow.getFocusedWindow() !== null,
+  log: (message) => console.log(`[desktop] ${message}`),
+  icon: APP_ICON,
+});
+
+/** The pet's global shortcuts (ADR 0080). */
+const shortcuts = new Shortcuts({
+  talk: () => onTalkKey(),
+  approve: () => onApproveKey(),
+  changed: (state) => send("app:shortcuts", state),
+  log: (message) => console.log(`[desktop] ${message}`),
+});
 
 function send(channel: string, payload: unknown): void {
   if (win !== undefined && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -47,6 +78,7 @@ function send(channel: string, payload: unknown): void {
 function setConnected(value: boolean): void {
   connected = value;
   send("host:connection", value);
+  menuBar?.update({ connected: value });
 }
 
 function applyKeepAwake(on: boolean): void {
@@ -58,12 +90,36 @@ function applyKeepAwake(on: boolean): void {
   }
 }
 
-function onHostEvent(event: HostEvent): void {
-  if (event.topic === "status") {
-    applyKeepAwake(event.data.keepAwake);
-    // An older host has no pet settings: no pet.
-    if (process.env.AGENTHERD_CAPTURE === undefined) pet?.set(event.data.pet?.on === true);
+function onStatus(status: HostStatus): void {
+  applyKeepAwake(status.keepAwake);
+  petSettings = status.pet;
+  notifier.setSettings(status.pet);
+  menuBar?.update({ status });
+  // An older host has no pet settings: no pet.
+  if (process.env.AGENTHERD_CAPTURE === undefined) {
+    pet?.setPlacement({
+      onTop: status.pet?.onTop ?? "always",
+      overFullscreen: status.pet?.overFullscreen ?? false,
+    });
+    pet?.set(status.pet?.on === true);
+    shortcuts.set({ talk: status.pet?.talkKey ?? "", approve: status.pet?.approveKey ?? "" });
   }
+}
+
+function onPetView(view: PetView): void {
+  petView = view;
+  notifier.view(view);
+  menuBar?.update({ view });
+}
+
+function onTasks(tasks: TasksView): void {
+  menuBar?.update({ tasks: tasks.tasks });
+}
+
+function onHostEvent(event: HostEvent): void {
+  if (event.topic === "status") onStatus(event.data);
+  else if (event.topic === "pet") onPetView(event.data);
+  else if (event.topic === "tasks") onTasks(event.data);
   send("host:event", event);
 }
 
@@ -81,8 +137,14 @@ async function connect(): Promise<void> {
       });
       setConnected(true);
       const status = await c.host.status();
-      applyKeepAwake(status.keepAwake);
       onHostEvent({ topic: "status", data: status });
+      // What is there now is no news: the notifier only notes it (ADR 0079).
+      const [view, tasks] = await Promise.all([
+        c.host.pet().catch(() => undefined),
+        c.host.tasks().catch(() => undefined),
+      ]);
+      if (view !== undefined) onPetView(view);
+      if (tasks !== undefined) onTasks(tasks);
       return;
     } catch (error) {
       console.error(`[desktop] host: ${(error as Error).message}`);
@@ -132,31 +194,91 @@ function openApp(taskId?: string): void {
   else tell();
 }
 
-function createTray(): void {
+/** Shows the pet's panel on a page; false when the pet is off (ADR 0079). */
+function showPet(tab: NoticeTab): boolean {
+  if (pet === undefined || petSettings?.on !== true) return false;
+  return pet.show(tab);
+}
+
+/** A click on a notification: the pet at the page it is about, else the app. */
+function showNotice(notice: Notice): void {
+  if (showPet(notice.tab)) return;
+  openApp(notice.taskId);
+}
+
+/** The talk shortcut: the pet's conversation with the cursor in its input, or the app. */
+function onTalkKey(): void {
+  if (!showPet("chat")) openApp();
+}
+
+/** The approve shortcut: picks the oldest approval, allows it on a second press (ADR 0080). */
+function onApproveKey(): void {
+  const settings = petSettings;
+  if (settings?.on !== true || pet === undefined) {
+    openApp();
+    return;
+  }
+  const press = approveKey.press(petView, Date.now());
+  if (press.kind === "allow") {
+    const { approval } = press;
+    const c = client;
+    if (c === undefined) {
+      tellArm({ kind: "failed", message: "AgentHerd 服务未连接" });
+      return;
+    }
+    void c.host
+      .petPress(approval.target, "allow")
+      .then(() => tellArm({ kind: "done", approval }))
+      .catch((error: Error) => tellArm({ kind: "failed", message: error.message }));
+    return;
+  }
+  showPet("cards");
+  tellArm(
+    press.kind === "arm"
+      ? { ...press, key: shortcutLabel(settings.approveKey, process.platform === "darwin") }
+      : { kind: "none" },
+  );
+}
+
+function tellArm(arm: PetArm): void {
+  pet?.send("pet:arm", arm);
+}
+
+ipcMain.on("pet:disarm", () => approveKey.clear());
+ipcMain.handle("app:shortcuts", () => shortcuts.state());
+// The settings page records a new shortcut: the old ones must not swallow the keys meanwhile.
+ipcMain.on("app:pause-shortcuts", (_e, paused: unknown) => {
+  if (typeof paused === "boolean") shortcuts.pause(paused);
+});
+
+function setPet(patch: Partial<PetSettings>): void {
+  void client?.host.updateSettings({ pet: patch }).catch((error: Error) => {
+    console.error(`[desktop] pet settings: ${error.message}`);
+  });
+}
+
+/** The menu bar icon on macOS and the tray icon on Windows; nothing elsewhere (ADR 0079). */
+function createMenuBar(): void {
   if (
-    process.platform !== "win32" ||
+    (process.platform !== "darwin" && process.platform !== "win32") ||
     process.env.AGENTHERD_CAPTURE !== undefined ||
-    tray !== undefined
+    menuBar !== undefined
   ) {
     return;
   }
-  const icon = nativeImage.createFromPath(APP_ICON).resize({ width: 16, height: 16 });
-  tray = new Tray(icon);
-  tray.setToolTip("AgentHerd");
-  tray.on("click", showWindow);
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: "打开 AgentHerd", click: showWindow },
-      { type: "separator" },
-      {
-        label: "退出",
-        click: () => {
-          quitting = true;
-          app.quit();
-        },
-      },
-    ]),
-  );
+  const mac = process.platform === "darwin";
+  menuBar = new MenuBar({
+    icon: mac ? MENU_BAR_ICON : APP_ICON,
+    template: mac,
+    openApp: () => openApp(),
+    showPet,
+    setPet,
+    quit: () => {
+      quitting = true;
+      app.quit();
+    },
+  });
+  menuBar.update({ connected });
 }
 
 function createWindow(): void {
@@ -202,16 +324,19 @@ function createWindow(): void {
     created.on("closed", () => nativeTheme.off("updated", follow));
   }
   created.on("close", (event) => {
-    if (!quitting && tray !== undefined) {
+    // Windows keeps running in the tray; macOS has always kept running without a window.
+    if (!quitting && menuBar !== undefined && process.platform === "win32") {
       event.preventDefault();
       created.hide();
     }
   });
   created.on("closed", () => {
     if (win === created) win = undefined;
+    // It may have been recording a shortcut.
+    shortcuts.pause(false);
     // The pet window would keep the app running with no way back in; outside macOS (and without
     // the Windows tray) closing the main window quits, as before.
-    if (process.platform !== "darwin" && tray === undefined && !quitting) app.quit();
+    if (process.platform !== "darwin" && menuBar === undefined && !quitting) app.quit();
   });
   created.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://")) void shell.openExternal(url);
@@ -261,7 +386,7 @@ app.whenReady().then(() => {
     openApp: openApp,
   });
   createWindow();
-  createTray();
+  createMenuBar();
   void connect();
   // The pet counts as a window; the dock icon brings back the main one.
   app.on("activate", () => showWindow());
@@ -269,17 +394,19 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   if (
-    (process.platform !== "darwin" && (tray === undefined || quitting)) ||
+    (process.platform !== "darwin" && (menuBar === undefined || quitting)) ||
     process.env.AGENTHERD_CAPTURE !== undefined
   ) {
     app.quit();
   }
 });
 
+app.on("will-quit", () => shortcuts.dispose());
+
 app.on("before-quit", (event) => {
   quitting = true;
-  tray?.destroy();
-  tray = undefined;
+  menuBar?.destroy();
+  menuBar = undefined;
   client?.close();
   if (!ownsHost()) return;
   // Let the host stop its tasks and tell the owner first; quit again once it is gone.

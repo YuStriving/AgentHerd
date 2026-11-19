@@ -296,9 +296,82 @@ export interface PetSettings {
   /** Shown on the desktop. */
   on: boolean;
   figure: PetFigure;
+  /**
+   * System notifications for what waits for the owner and for task results, even when the pet
+   * and the chat app are out of sight (ADR 0079).
+   */
+  notify: boolean;
+  /** Those notifications ring; a finished task never does, a failed one and a question do. */
+  sound: boolean;
+  /** `HH:MM-HH:MM` local hours with no notification, no sound and no panel popping open; "" none. */
+  quietHours: string;
+  /** Quiet until this ISO time (暂停打扰 from the menu bar or settings); "" when not snoozed. */
+  quietUntil: string;
+  /**
+   * A global shortcut (an Electron accelerator such as `CommandOrControl+Shift+Space`) that opens
+   * the pet's conversation with the cursor in the input; "" for none (ADR 0080).
+   */
+  talkKey: string;
+  /**
+   * A global shortcut that picks the oldest approval waiting; pressed again within a few seconds
+   * it allows that one (ADR 0080). "" for none.
+   */
+  approveKey: string;
+  /**
+   * "always": the pet floats above other windows; "busy": only while it has something for the
+   * owner (an approval or a question waits, a new line, its panel open), else it sits among the
+   * other windows (ADR 0080).
+   */
+  onTop: PetOnTop;
+  /** macOS: also shown over apps in full screen (ADR 0080). Off by default. */
+  overFullscreen: boolean;
+  /**
+   * After a reply the Herder guesses what the owner will say next; the pet shows it in the empty
+   * input and Tab takes it (ADR 0084). One small model call per reply.
+   */
+  suggest: boolean;
 }
 
-export const DEFAULT_PET: PetSettings = { on: true, figure: "deepseek" };
+export const PET_ON_TOP = ["always", "busy"] as const;
+export type PetOnTop = (typeof PET_ON_TOP)[number];
+
+/** Files the owner can drop on the pet at once (ADR 0082). */
+export const PET_DROP_MAX = 6;
+
+export const DEFAULT_PET: PetSettings = {
+  on: true,
+  figure: "deepseek",
+  notify: true,
+  sound: true,
+  quietHours: "",
+  quietUntil: "",
+  talkKey: "CommandOrControl+Shift+Space",
+  approveKey: "CommandOrControl+Shift+Y",
+  onTop: "always",
+  overFullscreen: false,
+  suggest: true,
+};
+
+/** `HH:MM-HH:MM`, both in 00:00–23:59; the hours may cross midnight (ADR 0079). */
+export const QUIET_HOURS = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/;
+
+/** Modifiers a pet shortcut may use (Electron accelerator words, ADR 0080). */
+export const PET_SHORTCUT_MODIFIERS = ["CommandOrControl", "Control", "Alt", "Super", "Shift"];
+
+/**
+ * A global shortcut the pet takes (ADR 0080): up to three different modifiers, one of them not
+ * Shift, then a letter, digit, Space, an arrow or a punctuation key; a function key needs none.
+ */
+export function isPetShortcut(value: string): boolean {
+  const parts = value.split("+");
+  // "+" itself is not offered, so the key is never empty.
+  const key = parts.pop() ?? "";
+  if (parts.length > 3 || new Set(parts).size !== parts.length) return false;
+  if (!parts.every((m) => PET_SHORTCUT_MODIFIERS.includes(m))) return false;
+  if (/^F([1-9]|1\d|2[0-4])$/.test(key)) return true;
+  const ok = /^([A-Z0-9]|Space|Up|Down|Left|Right|[/.,;'[\]\\`=-])$/.test(key);
+  return ok && parts.some((m) => m !== "Shift");
+}
 
 /** One thing AgentHerd sent to the owner, as the pet shows it. */
 export interface PetLine {
@@ -360,6 +433,11 @@ export interface PetView {
   history: PetLine[];
   /** The cards sent to the owner over the same time, oldest first (ADR 0072). */
   cards: PetCard[];
+  /**
+   * What the owner might say next, guessed after the Herder's last reply (ADR 0084). Gone once
+   * anything new is said or a card waits for them.
+   */
+  suggestion?: string;
 }
 
 /** 飞书 through lark-cli in 应用连接 (ADR 0059). */
@@ -621,8 +699,11 @@ export interface HostApi {
   testWestock(query?: string): Promise<WestockTest>;
   /** What the desktop pet shows (ADR 0070). */
   pet(): PetView;
-  /** The owner typed this to the pet: it reaches AgentHerd as a chat message. */
-  petSay(text: string): Promise<PetView>;
+  /**
+   * The owner typed this to the pet: it reaches AgentHerd as a chat message. `paths` are files
+   * dropped on the pet (ADR 0082): pictures go in as images, the rest as lines with their paths.
+   */
+  petSay(text: string, paths?: string[]): Promise<PetView>;
   /** The owner pressed a button on a card in the pet's bubble. */
   petPress(target: string, action: string): Promise<PetView>;
   /** The owner stopped a task (the pet's task card): its agent stops, the task stays (ADR 0072). */

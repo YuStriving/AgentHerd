@@ -151,6 +151,8 @@ renameSync(join(appDir, "Contents", "MacOS", "Electron"), join(appDir, "Contents
 plist("CFBundleExecutable", NAME);
 plist("CFBundleShortVersionString", version);
 plist("CFBundleVersion", version);
+// Notifications stay until answered and can carry 同意 / 拒绝 buttons (ADR 0079).
+plist("NSUserNotificationAlertStyle", "alert");
 rmSync(join(resources, "electron.icns"), { force: true });
 
 // The edits above break Electron's signature; sign the whole bundle again, ad hoc.
