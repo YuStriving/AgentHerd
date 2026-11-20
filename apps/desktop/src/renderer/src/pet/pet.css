@@ -1421,7 +1421,17 @@ body {
   cursor: pointer;
 }
 
-.pet-stage[data-grip] > :not(.pet-figure) {
+.pet-stage > button.pet-badge {
+  pointer-events: auto;
+  border: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+.pet-stage[data-docked="left"] .pet-badge {
+  left: 0;
+  right: auto;
+}
+.pet-stage[data-grip] > :not(.pet-figure, .pet-dots, .pet-badge) {
   visibility: hidden;
 }
 .pet-stage[data-grip] .pet-figure {
@@ -1460,10 +1470,4 @@ body {
   to {
     translate: 0 0;
   }
-}
-
-.pet-stage[data-docked]:not([data-grip]) .pet-figure::after {
-  content: "";
-  position: absolute;
-  inset: 0 -8px;
 }

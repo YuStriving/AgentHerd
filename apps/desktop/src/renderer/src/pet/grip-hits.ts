@@ -7,13 +7,18 @@ export function gripHits(root: HTMLElement): PetRegion[] | undefined {
   const stage = root.querySelector<HTMLElement>("[data-grip]");
   const img = stage?.querySelector("img");
   if (!stage || !img) return undefined;
-  if (!img.naturalWidth) return [];
+  const base = root.getBoundingClientRect();
+  const controls = Array.from(stage.querySelectorAll(".pet-dot-task, .pet-badge"), (control) => {
+    const r = control.getBoundingClientRect();
+    return { x: r.left - base.left, y: r.top - base.top, width: r.width, height: r.height };
+  });
+  if (!img.naturalWidth) return controls;
   if (!mask) {
     const canvas = document.createElement("canvas");
     canvas.width = img.width;
     canvas.height = img.height;
     const ctx = canvas.getContext("2d");
-    if (!ctx) return [];
+    if (!ctx) return controls;
     ctx.drawImage(img, 0, 0, img.width, img.height);
     const pixels = ctx.getImageData(0, 0, img.width, img.height).data;
     mask = [];
@@ -28,12 +33,13 @@ export function gripHits(root: HTMLElement): PetRegion[] | undefined {
   }
   const left = stage.dataset.grip === "left";
   const bounds = img.getBoundingClientRect();
-  const base = root.getBoundingClientRect();
   const x = Math.round(bounds.left - base.left);
   const y = Math.round(bounds.top - base.top);
-  return mask.map((r) => ({
-    ...r,
-    x: x + (left ? img.width - r.x - r.width : r.x),
-    y: y + r.y,
-  }));
+  return mask
+    .map((r) => ({
+      ...r,
+      x: x + (left ? img.width - r.x - r.width : r.x),
+      y: y + r.y,
+    }))
+    .concat(controls);
 }

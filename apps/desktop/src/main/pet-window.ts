@@ -199,7 +199,16 @@ export class PetWindow {
       this.updateHitTest();
     });
     // The cursor is on the figure, or its panel is open: a tucked figure comes out.
-    ipcMain.on("pet:peek", (e, on: unknown, panel: unknown, grip: unknown) => {
+    ipcMain.on("pet:peek", (e, state: unknown) => {
+      if (
+        !state ||
+        typeof state !== "object" ||
+        !("hover" in state) ||
+        !("panel" in state) ||
+        !("grip" in state)
+      )
+        return;
+      const { hover: on, panel, grip } = state;
       const w = this.own(e);
       if (w === undefined || typeof on !== "boolean") return;
       const changed = this.grip !== (grip === true);
@@ -337,7 +346,9 @@ export class PetWindow {
     const edge = pushedEdge(push, figure.width) ?? edgeOf(figure, area);
     if (edge === undefined) return;
     this.edge = edge;
-    this.anchor = { ...this.anchor, right: peekRight(edge, stage, this.size.width, area) };
+    // Keep the saved corner on the display where the drag ended.
+    const right = Math.min(peekRight(edge, stage, this.size.width, area), area.x + area.width);
+    this.anchor = { ...this.anchor, right };
   }
 
   /** Puts the window where its corner, size and tuck say. */
@@ -449,9 +460,7 @@ export class PetWindow {
       cursor.x - b.x,
       cursor.y - b.y,
       this.size,
-      this.grip && this.edge && !this.panel && !this.gripHits
-        ? [{ x: 0, y: 0, ...this.size }]
-        : (this.gripHits ?? this.regions),
+      this.gripHits ?? this.regions,
     );
     if (!hit) this.observeLeave(cursor);
     this.setIgnore(w, !hit);
@@ -659,7 +668,10 @@ export class PetWindow {
     try {
       const saved = JSON.parse(readFileSync(this.file(), "utf8")) as Corner;
       if (typeof saved.right === "number" && typeof saved.bottom === "number") {
-        const area = screen.getDisplayNearestPoint({ x: saved.right, y: saved.bottom }).workArea;
+        const area = screen.getDisplayNearestPoint({
+          x: saved.right - 1,
+          y: saved.bottom - 1,
+        }).workArea;
         const inside =
           saved.right > area.x + MIN &&
           saved.right <= area.x + area.width + MIN &&
