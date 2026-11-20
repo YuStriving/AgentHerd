@@ -19,6 +19,7 @@ import {
   Fragment,
   type KeyboardEvent,
   type PointerEvent,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -125,11 +126,12 @@ function regionsOf(root: HTMLElement): PetRegion[] {
   const regions: PetRegion[] = [];
   for (const node of root.querySelectorAll<HTMLElement>(".pet-stage, .pet-dot")) {
     const r = node.getBoundingClientRect();
+    const padding = node.hasAttribute("data-docked") ? 0 : 4;
     regions.push({
-      x: Math.max(0, Math.floor(r.left - base.left) - 4),
-      y: Math.max(0, Math.floor(r.top - base.top) - 4),
-      width: Math.ceil(r.width) + 8,
-      height: Math.ceil(r.height) + 8,
+      x: Math.max(0, Math.floor(r.left - base.left) - padding),
+      y: Math.max(0, Math.floor(r.top - base.top) - padding),
+      width: Math.ceil(r.width) + 2 * padding,
+      height: Math.ceil(r.height) + 2 * padding,
     });
   }
   for (const node of root.querySelectorAll<HTMLElement>(".pet-bubble")) {
@@ -452,39 +454,31 @@ export function Pet() {
     );
   });
 
-  // The window is as big as the pet; it grows up and to the left when the conversation opens.
+  const reportSize = useCallback(() => {
+    const el = root.current;
+    if (el) bridge.pet?.resize(el.offsetWidth, el.offsetHeight, regionsOf(el), gripHits(el));
+  }, []);
+
   useLayoutEffect(() => {
     const el = root.current;
-    if (el === null) return;
-    const fit = () =>
-      bridge.pet?.resize(el.offsetWidth, el.offsetHeight, regionsOf(el), gripHits(el));
-    fit();
-    const observer = new ResizeObserver(fit);
+    if (!el) return;
+    const observer = new ResizeObserver(reportSize);
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [reportSize]);
 
   // During entry the clickable silhouette moves with the image.
   useLayoutEffect(() => {
     if (!edgeGrip?.animate) return;
-    const el = root.current;
-    if (!el) return;
     let frame: number;
     const until = performance.now() + 320;
     const follow = () => {
-      bridge.pet?.resize(el.offsetWidth, el.offsetHeight, regionsOf(el), gripHits(el));
+      reportSize();
       if (performance.now() < until) frame = requestAnimationFrame(follow);
     };
     frame = requestAnimationFrame(follow);
     return () => cancelAnimationFrame(frame);
-  }, [edgeGrip]);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshes hit regions when panels open, fold or resize
-  useLayoutEffect(() => {
-    const el = root.current;
-    if (el !== null)
-      bridge.pet?.resize(el.offsetWidth, el.offsetHeight, regionsOf(el), gripHits(el));
-  }, [open, collapsed, edgeGrip, size.width, size.list]);
+  }, [edgeGrip, reportSize]);
 
   useEffect(() => {
     const pet = bridge.pet;
@@ -709,13 +703,24 @@ export function Pet() {
   const offline = !online || !view.connected;
   const suggestion = suggestionFor(view, draft, drops.length, offline);
   const badge = badgeOf(view.pending.length, unread);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: these changes can move hit regions without resizing the root
+  useLayoutEffect(reportSize, [
+    reportSize,
+    open,
+    collapsed,
+    pose,
+    size.width,
+    size.list,
+    tasks,
+    badge,
+  ]);
   const quiet = quietLine(settings, new Date(now));
   // A figure tucked at a screen edge comes out while the cursor is on it or its panel is open,
   // and the pet floats above other windows while it has something for the owner (ADR 0080).
   const canGrip = figure === "claude" && !collapsed;
   const busyForOwner = shown || badge > 0 || arm?.kind === "arm";
   useEffect(() => {
-    bridge.pet?.peek?.(hover, shown, canGrip);
+    bridge.pet?.peek?.({ hover, panel: shown, grip: canGrip });
   }, [hover, shown, canGrip]);
   useEffect(() => {
     bridge.pet?.float?.(busyForOwner);
@@ -1119,20 +1124,21 @@ export function Pet() {
                 }
           }
         >
-          {edgeGrip && (
-            <img
-              src={gripArt}
-              onLoad={() => {
-                const el = root.current;
-                if (el)
-                  bridge.pet?.resize(el.offsetWidth, el.offsetHeight, regionsOf(el), gripHits(el));
-              }}
-              alt=""
-              draggable={false}
-            />
-          )}
+          {edgeGrip && <img src={gripArt} onLoad={reportSize} alt="" draggable={false} />}
         </button>
-        {badge > 0 && <span className="pet-badge">{badge}</span>}
+        {badge > 0 && (
+          <button
+            type="button"
+            className="pet-badge"
+            aria-label={view.pending.length ? "待处理卡片" : "未读消息"}
+            onClick={() => {
+              setTab(view.pending.length ? "cards" : "chat");
+              setOpen(true);
+            }}
+          >
+            {badge}
+          </button>
+        )}
         {dots}
         {quiet !== undefined && (
           <span className="pet-moon" title={quiet} role="img" aria-label={quiet}>

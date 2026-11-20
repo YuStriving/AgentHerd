@@ -52,7 +52,7 @@ const bridge: Bridge = {
       return () => ipcRenderer.removeListener("pet:arm", handler);
     },
     disarm: () => ipcRenderer.send("pet:disarm"),
-    peek: (hover, panel, grip) => ipcRenderer.send("pet:peek", hover, panel, grip),
+    peek: (state) => ipcRenderer.send("pet:peek", state),
     onPose(listener) {
       const handler = (_e: unknown, pose: PetPose) => listener(pose);
       ipcRenderer.on("pet:pose", handler);

@@ -230,6 +230,8 @@ After an outward push and release at either side of a display, Claude slides int
 the edge grip over 300 ms. Both hands meet the same edge. A pointer already on
 the figure must leave and enter again to reveal the full figure. Leaving starts
 a 600 ms return timer. Entering cancels it. Both poses share a window anchor,
-and transparent space around the grip passes clicks through. Opening the panel
-shows the full figure. Restoring a saved tuck shows the resting pose immediately.
+and blank margins pass clicks through in both poses. The grip accepts clicks on
+its opaque pixels and the visible task dots and pending badge. A task dot opens
+Tasks. The badge opens pending cards, or chat when it only counts unread messages.
+Opening the panel shows the full figure. Restoring a saved tuck shows the resting pose immediately.
 Other figures keep the edge strip described in ADR 0080.

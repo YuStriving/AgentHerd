@@ -25,7 +25,7 @@ export function hitPetRegion(
   regions: readonly PetRegion[],
 ): boolean {
   if (x < 0 || y < 0 || x > size.width || y > size.height) return false;
-  return regions.some((r) => x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height);
+  return regions.some((r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
 }
 
 /** The desktop pet window's own calls (ADR 0070); main ignores them from other windows. */
@@ -68,7 +68,7 @@ export interface PetBridge {
   /** The owner let the armed approval go (Esc): the next press picks it again. */
   disarm?(): void;
   /** The cursor is on the figure or the panel is open: a figure tucked at the edge comes out. */
-  peek?(hover: boolean, panel?: boolean, grip?: boolean): void;
+  peek?(state: { hover: boolean; panel: boolean; grip: boolean }): void;
   onPose?(listener: (pose: PetPose) => void): () => void;
   /** The pet has something for the owner: it floats above other windows while on top is "busy". */
   float?(on: boolean): void;
