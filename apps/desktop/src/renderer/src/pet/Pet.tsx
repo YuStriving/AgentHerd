@@ -24,11 +24,13 @@ import {
   useRef,
   useState,
 } from "react";
-import type { PetRegion, PetRoom } from "../../../shared/bridge";
+import type { PetPose, PetRegion, PetRoom } from "../../../shared/bridge";
 import { isQuiet, quietLine } from "../../../shared/pet-notify";
 import type { PetArm } from "../../../shared/pet-shortcuts";
 import { devOpen } from "../dev-bridge";
 import { FIGURES } from "./figures";
+import gripArt from "./figures/poses/claude-edge.webp";
+import { gripHits } from "./grip-hits";
 import { CardView, TaskCard } from "./PetCards";
 import { LineView, Separator } from "./PetConversation";
 import {
@@ -151,6 +153,8 @@ export function Pet() {
     history: [],
     cards: [],
   });
+  const [pose, setPose] = useState<PetPose>();
+  useEffect(() => bridge.pet?.onPose?.(setPose), []);
   const [figure, setFigure] = useState<PetFigure>("deepseek");
   /** Quiet hours and snoozes (ADR 0079); undefined from an older host. */
   const [settings, setSettings] = useState<PetSettings>();
@@ -201,6 +205,8 @@ export function Pet() {
   const [space, setSpace] = useState<PetRoom>(screenSpace);
   const lastId = useRef<number | undefined>(undefined);
   const lastTurn = useRef<number | undefined>(undefined);
+  const edgeGrip =
+    figure === "claude" && !collapsed && !open && pose?.pose === "grip" ? pose : undefined;
   const folded = useRef(collapsed);
   const root = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; lastX: number; moved: boolean } | undefined>(
@@ -450,18 +456,35 @@ export function Pet() {
   useLayoutEffect(() => {
     const el = root.current;
     if (el === null) return;
-    const fit = () => bridge.pet?.resize(el.offsetWidth, el.offsetHeight, regionsOf(el));
+    const fit = () =>
+      bridge.pet?.resize(el.offsetWidth, el.offsetHeight, regionsOf(el), gripHits(el));
     fit();
     const observer = new ResizeObserver(fit);
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
 
+  // During entry the clickable silhouette moves with the image.
+  useLayoutEffect(() => {
+    if (!edgeGrip?.animate) return;
+    const el = root.current;
+    if (!el) return;
+    let frame: number;
+    const until = performance.now() + 320;
+    const follow = () => {
+      bridge.pet?.resize(el.offsetWidth, el.offsetHeight, regionsOf(el), gripHits(el));
+      if (performance.now() < until) frame = requestAnimationFrame(follow);
+    };
+    frame = requestAnimationFrame(follow);
+    return () => cancelAnimationFrame(frame);
+  }, [edgeGrip]);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshes hit regions when panels open, fold or resize
   useLayoutEffect(() => {
     const el = root.current;
-    if (el !== null) bridge.pet?.resize(el.offsetWidth, el.offsetHeight, regionsOf(el));
-  }, [open, collapsed, size.width, size.list]);
+    if (el !== null)
+      bridge.pet?.resize(el.offsetWidth, el.offsetHeight, regionsOf(el), gripHits(el));
+  }, [open, collapsed, edgeGrip, size.width, size.list]);
 
   useEffect(() => {
     const pet = bridge.pet;
@@ -689,11 +712,11 @@ export function Pet() {
   const quiet = quietLine(settings, new Date(now));
   // A figure tucked at a screen edge comes out while the cursor is on it or its panel is open,
   // and the pet floats above other windows while it has something for the owner (ADR 0080).
-  const peek = hover || shown;
+  const canGrip = figure === "claude" && !collapsed;
   const busyForOwner = shown || badge > 0 || arm?.kind === "arm";
   useEffect(() => {
-    bridge.pet?.peek?.(peek);
-  }, [peek]);
+    bridge.pet?.peek?.(hover, shown, canGrip);
+  }, [hover, shown, canGrip]);
   useEffect(() => {
     bridge.pet?.float?.(busyForOwner);
   }, [busyForOwner]);
@@ -1053,11 +1076,14 @@ export function Pet() {
       {/* biome-ignore lint/a11y/noStaticElementInteractions: hovering only shows the fold button */}
       <div
         className="pet-stage"
+        data-docked={figure === "claude" && !open ? pose?.side : undefined}
+        data-grip={edgeGrip?.side ?? undefined}
+        data-enter={edgeGrip?.animate || undefined}
         style={{ width: W, height: H }}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
       >
-        {hover && (
+        {hover && !edgeGrip && (
           <button
             type="button"
             className="pet-fold"
@@ -1082,13 +1108,30 @@ export function Pet() {
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") setOpen((x) => !x);
           }}
-          style={{
-            width: W,
-            height: H,
-            backgroundImage: `url(${atlas})`,
-            backgroundSize: `${W * ATLAS.columns}px ${H * ATLAS.rows}px`,
-          }}
-        />
+          style={
+            edgeGrip
+              ? undefined
+              : {
+                  width: W,
+                  height: H,
+                  backgroundImage: `url(${atlas})`,
+                  backgroundSize: `${W * ATLAS.columns}px ${H * ATLAS.rows}px`,
+                }
+          }
+        >
+          {edgeGrip && (
+            <img
+              src={gripArt}
+              onLoad={() => {
+                const el = root.current;
+                if (el)
+                  bridge.pet?.resize(el.offsetWidth, el.offsetHeight, regionsOf(el), gripHits(el));
+              }}
+              alt=""
+              draggable={false}
+            />
+          )}
+        </button>
         {badge > 0 && <span className="pet-badge">{badge}</span>}
         {dots}
         {quiet !== undefined && (

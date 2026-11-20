@@ -4,6 +4,12 @@
 import type { HostEvent, RemoteHost } from "@agentherd/host/api";
 import type { PetArm, ShortcutState } from "./pet-shortcuts.ts";
 
+export interface PetPose {
+  side: "left" | "right" | null;
+  pose: "full" | "grip";
+  animate: boolean;
+}
+
 export interface PetRegion {
   x: number;
   y: number;
@@ -31,7 +37,12 @@ export interface PetBridge {
   /** Ends the drag; resolves true when the window actually moved. */
   dragEnd(): Promise<boolean>;
   /** Fits the window to the pet and updates its interactive hit regions. */
-  resize(width: number, height: number, regions?: readonly PetRegion[]): void;
+  resize(
+    width: number,
+    height: number,
+    regions?: readonly PetRegion[],
+    gripHits?: readonly PetRegion[],
+  ): void;
   /** Locks mouse hit-testing active while a pointer button is held inside the pet. */
   interacting(active: boolean): void;
   /** Called when the cursor leaves the pet's interactive regions on Windows. */
@@ -57,7 +68,8 @@ export interface PetBridge {
   /** The owner let the armed approval go (Esc): the next press picks it again. */
   disarm?(): void;
   /** The cursor is on the figure or the panel is open: a figure tucked at the edge comes out. */
-  peek?(on: boolean): void;
+  peek?(hover: boolean, panel?: boolean, grip?: boolean): void;
+  onPose?(listener: (pose: PetPose) => void): () => void;
   /** The pet has something for the owner: it floats above other windows while on top is "busy". */
   float?(on: boolean): void;
   /**
