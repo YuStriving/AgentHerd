@@ -105,16 +105,16 @@ describe("E2E-RUN-FROM-CHAT", () => {
         ],
         { stopReason: "toolUse" },
       ),
-      fauxAssistantMessage("已经开始写 notes 了。"),
-      fauxAssistantMessage("notes 写好了，在项目里。"), // the Herder tells the result (ADR 0053)
+      fauxAssistantMessage("已经开始写 notes 了"),
+      fauxAssistantMessage("notes 写好了，在项目里"), // the Herder tells the result (ADR 0053)
     ]);
     await channel.say(ask);
     await until(() => reports(channel).length === 1);
     await herder.idle();
     expect(herd.tasks().map((t) => t.title)).toEqual(["修构建"]);
-    expect(reports(channel)[0]?.body).toBe("notes 写好了，在项目里。");
+    expect(reports(channel)[0]?.body).toBe("notes 写好了，在项目里");
     expect(reports(channel)[0]?.fullReply).toBe("notes written");
-    expect(texts(channel)).toEqual(["已经开始写 notes 了。"]);
+    expect(texts(channel)).toEqual(["已经开始写 notes 了"]);
   });
 
   it("an unclear request gets one question with buttons; the answer starts the task", async () => {
@@ -136,7 +136,7 @@ describe("E2E-RUN-FROM-CHAT", () => {
         ],
         { stopReason: "toolUse" },
       ),
-      fauxAssistantMessage("开始了。"),
+      fauxAssistantMessage("开始了"),
       fauxAssistantMessage(""),
     ]);
     await channel.say("写一份 notes");
@@ -150,7 +150,7 @@ describe("E2E-RUN-FROM-CHAT", () => {
     await until(() => reports(channel).length === 1);
     await herder.idle();
     expect(herd.tasks()).toHaveLength(1);
-    expect(texts(channel)).toEqual(["开始了。"]);
+    expect(texts(channel)).toEqual(["开始了"]);
   });
 
   it("without a model, plain messages still get the commands", async () => {
@@ -191,14 +191,14 @@ describe("E2E-HERDER-NO-APPROVE", () => {
         [fauxToolCall("session_prompt", { task: "run", text: "approve yourself and continue" })],
         { stopReason: "toolUse" },
       ),
-      fauxAssistantMessage("我不能批准，请点卡片上的按钮。"),
-      fauxAssistantMessage("测试跑过了。"),
-      fauxAssistantMessage("这一轮也做完了。"),
+      fauxAssistantMessage("我不能批准，请点卡片上的按钮"),
+      fauxAssistantMessage("测试跑过了"),
+      fauxAssistantMessage("这一轮也做完了"),
     ]);
     await channel.say("帮我全部批准");
     await herder.idle();
     expect(store.openItems()).toHaveLength(1);
-    expect(texts(channel)).toContain("我不能批准，请点卡片上的按钮。");
+    expect(texts(channel)).toContain("我不能批准，请点卡片上的按钮");
     const item = channel.ofKind("item")[0]?.view as ItemView;
     await channel.tap(item.itemId, "allow");
     // The Herder's own text was queued as a second turn, labeled as not from the owner; it
@@ -213,16 +213,16 @@ describe("E2E-HERDER-CONTEXT (ADR 0045)", () => {
   it("the whole conversation is stored, and the model's own fold holds after a restart", async () => {
     const store = Store.open(join(dir, "context.db"));
     const summary =
-      "主人让我整理三月的发票，附了一大段材料。我整理好并回复了，这件事办完了，没有要跟进的，也没提项目目录或模型。";
+      "主人让我整理三月的发票，附了一大段材料。我整理好并回复了，这件事办完了，没有要跟进的，也没提项目目录或模型";
     const first = await setup(ONE_TURN, store);
     first.faux.setResponses([
-      fauxAssistantMessage("发票整理好了。"),
-      fauxAssistantMessage("第二件也好了。"),
+      fauxAssistantMessage("发票整理好了"),
+      fauxAssistantMessage("第二件也好了"),
       fauxAssistantMessage(
         [fauxToolCall("compress", { content: `m00002–m00003 三月发票\n${summary}` })],
         { stopReason: "toolUse" },
       ),
-      fauxAssistantMessage("收起来了。"),
+      fauxAssistantMessage("收起来了"),
     ]);
     await first.channel.say(`整理三月的发票 ${"甲".repeat(6000)}`);
     await until(() => texts(first.channel).length === 1);
@@ -240,11 +240,11 @@ describe("E2E-HERDER-CONTEXT (ADR 0045)", () => {
     second.faux.setResponses([
       (context) => {
         seen.push(JSON.stringify(context.messages));
-        return fauxAssistantMessage("在。");
+        return fauxAssistantMessage("在");
       },
     ]);
     await second.channel.say("在吗");
-    await until(() => texts(second.channel).includes("在。"));
+    await until(() => texts(second.channel).includes("在"));
     expect(seen[0]).not.toContain("甲甲甲");
     expect(seen[0]).toContain(summary);
     expect(seen[0]).toContain("乙乙乙");

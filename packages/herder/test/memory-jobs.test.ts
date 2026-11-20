@@ -6,6 +6,7 @@ import {
   MemoryWorker,
   parseJson,
   REVIEW_SYSTEM,
+  REVIEW_TURNS,
 } from "../src/memory-jobs.ts";
 
 /** A memory model that answers each system prompt with the next scripted reply. */
@@ -26,7 +27,7 @@ function setup(replies: Record<string, string[]>) {
   const worker = new MemoryWorker({
     memory: store.memory,
     transcript: (id) => store.transcript(id),
-    herderTurns: (n) => store.herderTurns(n),
+    herderTurnsAfter: (id, n) => store.herderTurnsAfter(id, n),
     complete: m.complete,
   });
   return { store, worker, asked: m.asked };
@@ -214,5 +215,87 @@ describe("MemoryWorker", () => {
     ).toEqual(["主人希望报告三行以内", "小王负责前端"]);
     expect(store.memory.lastLog("review.done")?.ref).toBe("4");
     expect(store.memory.logs().filter((l) => l.kind === "review.dropped")).toHaveLength(2);
+  });
+});
+
+describe("reviews catch up (ADR 0090)", () => {
+  const NONE = JSON.stringify({ operations: [] });
+
+  it("reads the conversation in order from where the last review stopped, chunk by chunk", async () => {
+    const { store, worker, asked } = setup({ [REVIEW_SYSTEM]: [NONE, NONE, NONE] });
+    for (let i = 1; i <= REVIEW_TURNS * 2 + 5; i++) store.addHerderTurn("owner", `第 ${i} 句`);
+    store.memory.enqueueJob(REVIEW_JOB, { afterId: 0 });
+    await worker.drain();
+    expect(asked).toHaveLength(3);
+    expect(asked[0]?.user).toContain("[owner] 第 1 句");
+    expect(asked[0]?.user).not.toContain(`第 ${REVIEW_TURNS + 1} 句`);
+    expect(asked[1]?.user).toContain(`[owner] 第 ${REVIEW_TURNS + 1} 句`);
+    expect(asked[2]?.user).toContain(`第 ${REVIEW_TURNS * 2 + 5} 句`);
+    expect(store.memory.lastLog("review.done")?.ref).toBe(String(REVIEW_TURNS * 2 + 5));
+  });
+
+  it("an old job starts after the newest finished review, not before it", async () => {
+    const { store, worker, asked } = setup({ [REVIEW_SYSTEM]: [NONE] });
+    store.addHerderTurn("owner", "早就读过的");
+    store.memory.log("review.done", "through turn 1", "1");
+    store.addHerderTurn("owner", "还没读的");
+    store.memory.enqueueJob(REVIEW_JOB, { afterId: 0 });
+    await worker.drain();
+    expect(asked[0]?.user).not.toContain("早就读过的");
+    expect(asked[0]?.user).toContain("还没读的");
+  });
+
+  it("on start, queues a review when the owner said things no review read", () => {
+    const { store, worker } = setup({});
+    store.addHerderTurn("owner", "我一般半夜写代码");
+    store.memory.enqueueJob(REVIEW_JOB, { afterId: 0 });
+    const failed = store.memory.claimJob();
+    if (failed === undefined) throw new Error("no job");
+    for (let i = 0; i < 4; i++) store.memory.failJob(failed.id, "Request timed out.");
+    worker.catchUp();
+    const pending = store.memory.jobs().filter((j) => j.state === "pending");
+    expect(pending.map((j) => j.kind)).toEqual([REVIEW_JOB]);
+    worker.catchUp();
+    expect(store.memory.jobs().filter((j) => j.state === "pending")).toHaveLength(1);
+  });
+});
+
+describe("reviews keep the owner's profile card (ADR 0091)", () => {
+  it("keeps facts said in passing on the card and replaces a field that changed", async () => {
+    const add = (content: string, evidence: string) => ({
+      action: "add",
+      kind: "profile",
+      content,
+      evidence,
+    });
+    const { store, worker, asked } = setup({
+      [REVIEW_SYSTEM]: [
+        JSON.stringify({
+          operations: [
+            add("称呼：火哥", "叫我火哥"),
+            add("作息：常写代码到半夜", "我一般半夜还在写代码"),
+            { action: "add", kind: "decision", content: "不做 Windows 版", evidence: "叫我火哥" },
+          ],
+        }),
+        JSON.stringify({ operations: [add("作息：最近早睡", "这周开始早睡了")] }),
+      ],
+    });
+    store.addHerderTurn("owner", "叫我火哥，我一般半夜还在写代码");
+    store.memory.enqueueJob(REVIEW_JOB, { afterId: 0 });
+    await worker.drain();
+    expect(asked[0]?.system).toContain("profile: the owner's profile card");
+    const card = () =>
+      store.memory
+        .list({ kinds: ["profile"] })
+        .map((r) => r.abstract)
+        .sort();
+    expect(card()).toEqual(["作息：常写代码到半夜", "称呼：火哥"]);
+    expect(store.memory.list({ kinds: ["decision"] })).toHaveLength(0);
+
+    store.addHerderTurn("owner", "这周开始早睡了");
+    store.memory.enqueueJob(REVIEW_JOB, { afterId: 0 });
+    await worker.drain();
+    expect(asked[1]?.user).toContain("[profile] 称呼：火哥");
+    expect(card()).toEqual(["作息：最近早睡", "称呼：火哥"]);
   });
 });

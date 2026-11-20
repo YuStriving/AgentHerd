@@ -357,9 +357,18 @@ function mem(
 export function sampleMemory(): MemoryView {
   return {
     ready: true,
-    used: { owner: 31, decision: 22, note: 18 },
-    caps: { owner: 1375, decision: 2200, note: 2200 },
+    used: { profile: 38, owner: 31, decision: 22, note: 18 },
+    caps: { profile: 600, owner: 1375, decision: 2200, note: 2200 },
     entries: [
+      mem("p0", "profile", "称呼：火哥", { source: "owner_edit" }),
+      mem("p1", "profile", "在做：AgentHerd，一个帮人盯着编程 agent 的桌面应用", {
+        source: "review",
+        evidence: "我在做 AgentHerd",
+      }),
+      mem("p2", "profile", "作息：常写代码到半夜", {
+        source: "review",
+        evidence: "我一般半夜还在写代码",
+      }),
       mem("m0", "decision", "AgentHerd 仓库的改动可以直接推 main，不用开 PR", {
         evidence: "AgentHerd 以后直接推 main 就行，不用开 PR",
       }),

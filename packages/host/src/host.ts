@@ -13,11 +13,13 @@ import {
   Herd,
   isSubscription,
   type JsonRpcMessage,
+  type MemoryStore,
   type ModelRef,
   type ModelRole,
   type ModelService,
   type ModelSettings,
   modelKeyAccount,
+  profileField,
   putService,
   RESIDENT_CAPS,
   removeService,
@@ -33,8 +35,9 @@ import {
   herderFromSettings,
   LOGIN_FIELD,
   loginsFor,
+  MemoryModelChain,
   MemoryWorker,
-  memoryModel,
+  memoryModels,
   modelChoices,
   modelLaunchFor,
   PI_MODEL_ENV,
@@ -74,11 +77,13 @@ import type {
   ModelsView,
   ModelTest,
   ModelTiersView,
+  OwnerProfile,
   PetFigure,
   PetOnTop,
   PetSettings,
   PetView,
   ProbeTarget,
+  ProfileFieldName,
   ProviderView,
   SchedulesView,
   SettingsPatch,
@@ -96,7 +101,15 @@ import type {
   WestockTest,
   WestockView,
 } from "./api.ts";
-import { DEFAULT_PET, isPetShortcut, PET_FIGURES, PET_ON_TOP, QUIET_HOURS } from "./api.ts";
+import {
+  DEFAULT_PET,
+  isPetShortcut,
+  PET_FIGURES,
+  PET_ON_TOP,
+  PROFILE_FIELD_NAMES,
+  PROFILE_VALUE_MAX,
+  QUIET_HOURS,
+} from "./api.ts";
 import { Apps, newComposioUserId } from "./apps.ts";
 import type { AgentDef, Fetchers } from "./catalog.ts";
 import { withClaudeHome } from "./claude-home.ts";
@@ -686,6 +699,7 @@ export class Host implements HostApi {
     try {
       await herd.start();
       this.herd = herd;
+      this.writeWaitingProfile();
       this.startMemoryWorker(herd);
       this.connected = true;
       this.channelError = undefined;
@@ -710,10 +724,14 @@ export class Host implements HostApi {
     return this.embedder;
   }
 
-  private async memoryComplete(system: string, user: string, signal: AbortSignal): Promise<string> {
-    const model = memoryModel(this.settings(), this.opts.secrets, this.placement(), this.opts.env);
-    if (model === undefined) throw new Error("no model for memory");
-    return model.complete(system, user, signal);
+  /** Memory jobs try the cheap models in turn, then the Herder's (ADR 0090). */
+  private readonly memoryChain = new MemoryModelChain(
+    () => memoryModels(this.settings(), this.opts.secrets, this.placement(), this.opts.env),
+    (line) => this.log(line),
+  );
+
+  private memoryComplete(system: string, user: string, signal: AbortSignal): Promise<string> {
+    return this.memoryChain.complete(system, user, signal);
   }
 
   private startMemoryWorker(herd: Herd): void {
@@ -721,7 +739,7 @@ export class Host implements HostApi {
     const worker = new MemoryWorker({
       memory: herd.store.memory,
       transcript: (taskId) => herd.store.transcript(taskId),
-      herderTurns: (limit) => herd.store.herderTurns(limit),
+      herderTurnsAfter: (afterId, limit) => herd.store.herderTurnsAfter(afterId, limit),
       complete: (system, user, signal) => this.memoryComplete(system, user, signal),
       embedder: this.memoryEmbedder(),
       log: (line) => this.log(line),
@@ -978,7 +996,7 @@ export class Host implements HostApi {
       return {
         entries: [],
         deleted: [],
-        used: { owner: 0, decision: 0, note: 0 },
+        used: { profile: 0, owner: 0, decision: 0, note: 0 },
         caps: { ...RESIDENT_CAPS },
         ready: false,
       };
@@ -987,6 +1005,7 @@ export class Host implements HostApi {
       entries: memory.list(),
       deleted: memory.list({ status: "deleted" }).slice(0, MEMORY_DELETED_SHOWN),
       used: {
+        profile: memory.used("profile"),
         owner: memory.used("owner"),
         decision: memory.used("decision"),
         note: memory.used("note"),
@@ -1038,6 +1057,58 @@ export class Host implements HostApi {
     const herd = this.herd;
     if (herd === undefined) throw new Error("AgentHerd is not running; connect Feishu first");
     return herd.schedules;
+  }
+
+  ownerProfile(): OwnerProfile {
+    const out: OwnerProfile = {};
+    for (const r of this.herd?.store.memory.list({ kinds: ["profile"] }) ?? []) {
+      const field = profileField(r.abstract);
+      if (field !== undefined) out[field] = profileValue(r.abstract);
+    }
+    for (const [field, value] of Object.entries(this.config().profileWaiting ?? {})) {
+      if (!isProfileField(field) || value === undefined) continue;
+      if (value === "") delete out[field];
+      else out[field] = value;
+    }
+    return out;
+  }
+
+  setProfile(field: ProfileFieldName, value: string): OwnerProfile {
+    if (!isProfileField(field)) {
+      throw new Error(`field must be one of ${PROFILE_FIELD_NAMES.join(", ")}`);
+    }
+    const text = value.replace(/\s+/g, " ").trim();
+    if (text.length > PROFILE_VALUE_MAX) {
+      throw new Error(`${field} must be at most ${PROFILE_VALUE_MAX} characters`);
+    }
+    const memory = this.herd?.store.memory;
+    if (memory === undefined) {
+      const config = this.config();
+      writeConfig(this.opts.home, {
+        ...config,
+        profileWaiting: { ...config.profileWaiting, [field]: text },
+      });
+      return this.ownerProfile();
+    }
+    writeProfileField(memory, field, text);
+    return this.ownerProfile();
+  }
+
+  /** Writes the profile fields set while AgentHerd was not running (ADR 0091). */
+  private writeWaitingProfile(): void {
+    const memory = this.herd?.store.memory;
+    const config = this.config();
+    const waiting = config.profileWaiting;
+    if (memory === undefined || waiting === undefined) return;
+    try {
+      for (const [field, value] of Object.entries(waiting)) {
+        if (isProfileField(field) && value !== undefined) writeProfileField(memory, field, value);
+      }
+      const { profileWaiting: _written, ...rest } = config;
+      writeConfig(this.opts.home, rest);
+    } catch (error) {
+      this.log(`[memory] could not write the profile: ${(error as Error).message}`);
+    }
   }
 
   private ownMemory() {
@@ -1461,6 +1532,26 @@ function cleanService(s: ModelService): ModelService {
 }
 
 /** The pet settings with defaults filled in; an unknown figure falls back to the default. */
+function isProfileField(field: string): field is ProfileFieldName {
+  return (PROFILE_FIELD_NAMES as readonly string[]).includes(field);
+}
+
+/** 「称呼：火哥」 → 「火哥」. */
+function profileValue(abstract: string): string {
+  return abstract.slice(abstract.search(/[：:]/) + 1).trim();
+}
+
+/** Sets or clears one field of the owner's profile card as the owner's own edit (ADR 0091). */
+function writeProfileField(memory: MemoryStore, field: ProfileFieldName, value: string): void {
+  const meta = { actor: "owner", source: "owner_edit" } as const;
+  if (value === "") {
+    const old = memory.list({ kinds: ["profile"] }).find((r) => profileField(r.abstract) === field);
+    if (old !== undefined) memory.write([{ op: "remove", id: old.id }], meta);
+    return;
+  }
+  memory.write([{ op: "add", kind: "profile", abstract: `${field}：${value}` }], meta);
+}
+
 function petSettings(config: CliConfig): PetSettings {
   const saved = config.pet ?? {};
   const figure: PetFigure = PET_FIGURES.includes(saved.figure as PetFigure)

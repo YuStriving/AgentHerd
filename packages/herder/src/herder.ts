@@ -31,6 +31,7 @@ import { LOOKUP_TOOL_NAMES, type LookupOptions, lookupTools } from "./lookup.ts"
 import { memorySnapshot, memoryTools, recallBlock } from "./memory.ts";
 import type { TierPlacement } from "./model-guide.ts";
 import {
+  accountsPrompt,
   eventsPrompt,
   intakePrompt,
   nowLine,
@@ -42,7 +43,7 @@ import {
   systemPrompt,
   voicePrompt,
 } from "./prompt.ts";
-import { stylePrompt } from "./style.ts";
+import { stylePrompt, withoutEndPeriods } from "./style.ts";
 import { sampleSuggestion } from "./suggest.ts";
 import {
   herderTools,
@@ -509,7 +510,8 @@ export class Herder implements HerderPort {
     // A model that writes its tool calls as text (DeepSeek's DSML) must not reach the owner.
     const said = beforeToolMarkup(raw);
     if (said !== raw) this.host.audit("herder.reply.markup", { kind: job.kind });
-    const text = said === raw ? await this.readableBlocks(job, said) : said;
+    // Chat style: no 「。」 at the end of a line (ADR 0088).
+    const text = withoutEndPeriods(said === raw ? await this.readableBlocks(job, said) : said);
     // Tool calls written as text (not a repaired block) mean the voice cannot be trusted.
     if (job.kind === "voice" && said !== raw) {
       this.save();
@@ -740,8 +742,20 @@ export class Herder implements HerderPort {
   }
 
   /** The rules, then how to fold, then the memory: what changes least comes first, for the cache. */
+  /** Which accounts are connected, for the system prompt (ADR 0089). */
+  private accounts(): string {
+    try {
+      return accountsPrompt({
+        socials: (this.host.socialWatches?.() ?? []).map((s) => ({ name: s.name, ready: s.ready })),
+        apps: this.host.apps?.() ?? [],
+      });
+    } catch {
+      return accountsPrompt({ socials: [], apps: [] });
+    }
+  }
+
   private fullSystemPrompt(): string {
-    const base = `${systemPrompt(this.host.locale)}\n\n${stylePrompt()}\n\n${this.context.systemPrompt()}\n\n${herdUiPrompt()}`;
+    const base = `${systemPrompt(this.host.locale)}\n\n${stylePrompt()}\n\n${this.context.systemPrompt()}\n\n${herdUiPrompt()}\n\n${this.accounts()}`;
     const snapshot = this.host.memory === undefined ? "" : memorySnapshot(this.host.memory);
     return snapshot === "" ? base : `${base}\n\n${snapshot}`;
   }
@@ -754,9 +768,12 @@ export class Herder implements HerderPort {
     const now = this.now();
     const stale = this.lastTurnAt !== 0 && now - this.lastTurnAt >= MEMORY_REFRESH_MS;
     this.lastTurnAt = now;
-    if (!stale || this.host.memory === undefined) return;
     const first = this.agent.state.messages[0];
     if (first?.role !== "system") return;
+    // A connected or disconnected account changes the prompt at once (ADR 0089).
+    const accountsChanged =
+      typeof first.content === "string" && !first.content.includes(this.accounts());
+    if (!accountsChanged && (!stale || this.host.memory === undefined)) return;
     const prompt = this.fullSystemPrompt();
     if (first.content === prompt) return;
     this.agent.state.messages = [

@@ -22,15 +22,16 @@ import type { TurnContext } from "./tools.ts";
 export const CASE_INPUT_CHARS = 12_000;
 /** Lines of the Herder's conversation a review reads. */
 export const REVIEW_TURNS = 40;
-/** One job may take this long. */
-export const JOB_TIMEOUT_MS = 90_000;
+/** One job may take this long, over every model it tries (ADR 0090). */
+export const JOB_TIMEOUT_MS = 180_000;
 /** How often the worker looks for due jobs. */
 export const WORKER_POLL_MS = 15_000;
 
 export interface MemoryWorkerDeps {
   memory: MemoryStore;
   transcript(taskId: string): TranscriptEntry[];
-  herderTurns(limit: number): HerderTurn[];
+  /** Up to `limit` lines of the Herder's conversation after line `afterId`, oldest first. */
+  herderTurnsAfter(afterId: number, limit: number): HerderTurn[];
   /** One request to the memory model; returns its text. Undefined when no model is set up. */
   complete?: (system: string, user: string, signal: AbortSignal) => Promise<string>;
   /** Fills vectors for entries that have none, after the jobs. */
@@ -91,14 +92,18 @@ You get a new lesson from a task and the closest existing lessons. Reply with on
 Similar words are not enough to update: update only when it is the same lesson. Prefer none over a vague lesson.
 Write in the language of the lesson. Lessons are statements of fact, not orders.`;
 
+/** Kinds a review may add: what the owner shows about themselves, people and projects. */
+export const REVIEW_KINDS = ["profile", "owner", "person", "project"] as const;
+
 export const REVIEW_SYSTEM = `You review a secretary's recent conversation with its owner for things to remember long term.
 Keep only:
-- owner: what the owner said will hold (以后/每次/默认/记住/always/from now on), about themselves or how they want things done
+- profile: the owner's profile card, one entry per field, written "<field>：<value>" in the owner's language. Fields: 称呼 (what they want to be called, or the name they go by), 身份 (who they are, their job), 在做 (what they are working on these days), 作息 (when they work and rest), 回答方式 (how they like answers), 喜好 (likes and dislikes), 在意 (what they care about now). Keep what the owner's own words show, even said in passing; no "from now on" needed. If the card already has the field and it changed, add it again: the new entry replaces the old.
+- owner: what the owner said will hold (以后/每次/默认/记住/always/from now on) about how they want things done
 - person: people the owner told about (who they are, what they do)
 - project: what a project is or who owns it, as the owner said
-Never keep one-off requests for one task, task progress or results, folders or paths, questions, ifs, or anything the secretary said.
+Never keep one-off requests for one task, task progress or results, folders or paths, questions, ifs, guesses, or anything the secretary said.
 Most conversations need no change. Reply with only a JSON object:
-{"operations": []} or {"operations": [{"action": "add", "kind": "owner|person|project", "content": "≤200 chars, a plain statement of fact", "evidence": "the owner's words, copied exactly"}]}
+{"operations": []} or {"operations": [{"action": "add", "kind": "profile|owner|person|project", "content": "≤200 chars, a plain statement of fact", "evidence": "the owner's words, copied exactly from one of their lines"}]}
 To change a remembered entry use {"action": "replace", "id": "<id>", "content": "...", "evidence": "..."}.`;
 
 /** Runs memory jobs one at a time. */
@@ -114,6 +119,7 @@ export class MemoryWorker {
 
   start(pollMs = WORKER_POLL_MS): void {
     this.deps.memory.resetRunningJobs();
+    this.catchUp();
     this.timer = setInterval(() => this.kick(), pollMs);
     this.timer.unref?.();
     this.kick();
@@ -123,6 +129,21 @@ export class MemoryWorker {
     this.stopped = true;
     if (this.timer !== undefined) clearInterval(this.timer);
     await this.running;
+  }
+
+  /**
+   * Queues a review when the owner said things no review has read and none is waiting, e.g.
+   * after reviews failed (ADR 0090).
+   */
+  catchUp(): void {
+    const { memory } = this.deps;
+    const waiting = memory
+      .jobs(20)
+      .some((j) => j.kind === REVIEW_JOB && (j.state === "pending" || j.state === "running"));
+    if (waiting) return;
+    const afterId = Number(memory.lastLog("review.done")?.ref ?? 0);
+    const unread = this.deps.herderTurnsAfter(afterId, REVIEW_TURNS);
+    if (unread.some((t) => t.role === "owner")) memory.enqueueJob(REVIEW_JOB, { afterId });
   }
 
   /** Looks for due jobs now. */
@@ -263,13 +284,22 @@ export class MemoryWorker {
   }
 
   private async reviewJob(p: Record<string, unknown>): Promise<void> {
-    const afterId = typeof p.afterId === "number" ? p.afterId : 0;
-    const turns = this.deps.herderTurns(REVIEW_TURNS).filter((t) => t.id > afterId);
-    const owner = turns.filter((t) => t.role === "owner");
-    if (owner.length === 0) return;
     const { memory } = this.deps;
+    // Reviews read the conversation in order from where the last one stopped, so lines missed
+    // while jobs failed are read later (ADR 0090); the payload's start is only a lower bound.
+    const reviewed = Number(memory.lastLog("review.done")?.ref ?? 0);
+    const afterId = Math.max(typeof p.afterId === "number" ? p.afterId : 0, reviewed);
+    const turns = this.deps.herderTurnsAfter(afterId, REVIEW_TURNS);
+    const last = turns.at(-1)?.id;
+    const more = turns.length === REVIEW_TURNS;
+    const owner = turns.filter((t) => t.role === "owner");
+    if (owner.length === 0) {
+      if (last !== undefined) memory.log("review.done", `through turn ${last}`, String(last));
+      if (more && last !== undefined) memory.enqueueJob(REVIEW_JOB, { afterId: last });
+      return;
+    }
     const remembered = memory
-      .list({ kinds: ["owner", "person", "project"] })
+      .list({ kinds: REVIEW_KINDS })
       .map((r) => `- id=${r.id.slice(0, 8)} [${r.kind}] ${r.abstract}`);
     const conversation = turns
       .filter((t) => t.role !== "event")
@@ -303,6 +333,9 @@ export class MemoryWorker {
           ? memory.list().find((r) => r.id.startsWith(op.id as string))
           : undefined;
       if (op.action === "remove" || (op.action === "replace" && old === undefined)) continue;
+      if (op.action === "add" && !REVIEW_KINDS.includes(op.kind as (typeof REVIEW_KINDS)[number])) {
+        continue;
+      }
       const problem = opProblem(op, turn, old);
       if (problem !== undefined) {
         memory.log("review.dropped", `${op.content ?? ""}: ${problem}`);
@@ -315,13 +348,12 @@ export class MemoryWorker {
       } else if (op.action === "add") {
         ops.push({
           op: "add",
-          kind: op.kind as "owner" | "person" | "project",
+          kind: op.kind as (typeof REVIEW_KINDS)[number],
           abstract: content,
           ...(evidence === "" ? {} : { evidence }),
         });
       }
     }
-    const last = turns.at(-1)?.id;
     if (ops.length > 0) {
       try {
         memory.write(ops, { actor: "review", source: "review" });
@@ -334,6 +366,8 @@ export class MemoryWorker {
       }
     }
     if (last !== undefined) memory.log("review.done", `through turn ${last}`, String(last));
+    // A full chunk means more lines wait: read them next.
+    if (more && last !== undefined) memory.enqueueJob(REVIEW_JOB, { afterId: last });
   }
 }
 

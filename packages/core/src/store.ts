@@ -485,6 +485,16 @@ export class Store {
     return rows.reverse().map(toHerderTurn);
   }
 
+  /** Up to `limit` lines of the Herder's conversation after line `afterId`, oldest first. */
+  herderTurnsAfter(afterId: number, limit = 100): HerderTurn[] {
+    const rows = this.db
+      .prepare(
+        "SELECT id, at, role, text, task_id FROM herder_turns WHERE id > ? ORDER BY id LIMIT ?",
+      )
+      .all(afterId, limit);
+    return rows.map(toHerderTurn);
+  }
+
   /** Lines of the Herder's conversation that contain the words of `query`, newest first. */
   searchHerderTurns(query: string, limit = 10): HerderTurn[] {
     const match = ftsQuery(query);

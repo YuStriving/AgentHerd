@@ -1,6 +1,8 @@
 // The first run: one question per screen, over the whole window, with Back and Continue.
-// Order: 欢迎 → 绑定飞书 → 添加模型服务 → 给主管选模型 → 主管怎么跟你说话 → 完成. Every step after 欢迎 can wait.
+// Order: 欢迎 → 怎么叫你 → 选主管形象 → 绑定飞书 → 添加模型服务 → 给主管选模型 → 完成 (ADR 0091).
+// Every step after 欢迎 can wait.
 
+import type { PetFigure } from "@agentherd/host/api";
 import { ArrowRight, Loader2 } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
@@ -11,17 +13,19 @@ import { ServiceChooser, ServiceForm } from "../components/ServiceForm";
 import { Button } from "../components/ui";
 import { devOpen } from "../dev-bridge";
 import { isMac } from "../platform";
-import { useApp } from "../store";
+import { call, useApp } from "../store";
 import {
   DoneBody,
   FeishuBody,
+  FigureBody,
   HerderBody,
+  NameBody,
   ServiceListBody,
   useHerderChoice,
 } from "./FirstRunSteps";
 import "./first-run.css";
 
-type Step = "welcome" | "feishu" | "service" | "herder" | "done";
+type Step = "welcome" | "name" | "figure" | "feishu" | "service" | "herder" | "done";
 /** The parts of the service step: the saved list, the grid of services, then one form. */
 type ServicePart = "list" | "pick" | "form";
 
@@ -34,9 +38,9 @@ const WIDE = "w-full max-w-[880px]";
 const FILL = "h-[max(300px,calc(100vh-296px))]";
 const UP_TO = "max-h-[max(200px,calc(100vh-296px))]";
 
-const ORDER: readonly Step[] = ["welcome", "feishu", "service", "herder", "done"];
+const ORDER: readonly Step[] = ["welcome", "name", "figure", "feishu", "service", "herder", "done"];
 /** The steps that get a dot; 欢迎 does not. */
-const DOTTED: readonly Step[] = ["feishu", "service", "herder", "done"];
+const DOTTED: readonly Step[] = ["name", "figure", "feishu", "service", "herder", "done"];
 
 /** Runs a state change as a view transition where the browser has them (fade and blur). */
 function transition(change: () => void) {
@@ -79,6 +83,30 @@ export function FirstRun() {
   const flow = useFeishuSetup();
   const draft = useServiceDraft();
   const herder = useHerderChoice();
+  const figure = useApp((s) => s.status?.pet?.figure ?? "deepseek");
+  // What the Herder calls the owner: saved on 继续, kept until AgentHerd runs (ADR 0091).
+  const [name, setName] = useState("");
+  const savedName = useRef("");
+  useEffect(() => {
+    void call((h) => h.ownerProfile()).then((p) => {
+      const known = p?.称呼 ?? "";
+      savedName.current = known;
+      setName((n) => (n === "" ? known : n));
+    });
+  }, []);
+  const saveName = async () => {
+    const next = name.trim();
+    if (next !== savedName.current) {
+      const saved = await call((h) => h.setProfile("称呼", next));
+      if (saved === undefined) return;
+      savedName.current = next;
+    }
+    forward();
+  };
+  const pickFigure = async (next: PetFigure) => {
+    const status = await call((h) => h.updateSettings({ pet: { figure: next } }));
+    if (status !== undefined) useApp.setState({ status });
+  };
   // Dev previews (`?open=first-run-pick` / `first-run-form`, fake bridge only) start at the
   // service step.
   const [preview] = useState(() => devOpen()?.match(/^first-run-(pick|form)$/)?.[1] ?? null);
@@ -138,6 +166,17 @@ export function FirstRun() {
 
   switch (step) {
     case "welcome":
+      break;
+    case "name":
+      title = "主管怎么叫你？";
+      hint = "写一个你习惯的称呼，主管偶尔会这么叫你。以后在「记忆」页也能改。";
+      body = <NameBody name={name} setName={setName} />;
+      onPrimary = () => void saveName();
+      break;
+    case "figure":
+      title = "选主管形象";
+      hint = "主管会以这个样子待在桌面一角，有事会动、会说话。以后在「设置」里也能换。";
+      body = <FigureBody figure={figure} pick={(f) => void pickFigure(f)} />;
       break;
     case "feishu":
       title = "绑定飞书";

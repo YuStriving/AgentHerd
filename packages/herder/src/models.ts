@@ -311,15 +311,15 @@ export interface MemoryModel {
 }
 
 /**
- * The cheap model memory jobs run on (ADR 0038): the first model of the fast tier a service with a
- * key offers, else the Herder's own model. Undefined when there is neither.
+ * The models memory jobs may run on, cheapest first (ADR 0038, ADR 0090): the fast tier's models
+ * a service with a key offers, then the Herder's own model. Each model once.
  */
-export function memoryModel(
+export function memoryModels(
   settings: ModelSettings,
   secrets: SecretStore,
   tiers?: TierPlacement,
   env?: Record<string, string>,
-): MemoryModel | undefined {
+): MemoryModel[] {
   const candidates: { service: ModelService; model: string }[] = [];
   for (const entry of tiers?.fast ?? []) {
     for (const service of settings.services) {
@@ -328,7 +328,10 @@ export function memoryModel(
   }
   const herder = modelFor(settings, "herder");
   if (herder !== undefined) candidates.push(herder);
+  const out: MemoryModel[] = [];
   for (const c of candidates) {
+    const ref = `${c.service.id}/${c.model}`;
+    if (out.some((m) => m.ref === ref)) continue;
     if (!serviceReady(c.service, secrets, env)) continue;
     const key = serviceKey(c.service, secrets, env);
     let model: Model<Api>;
@@ -337,8 +340,8 @@ export function memoryModel(
     } catch {
       continue;
     }
-    return {
-      ref: `${c.service.id}/${c.model}`,
+    out.push({
+      ref,
       complete: async (system, user, signal) => {
         const stream = requestStream(secrets, () => settings.services);
         const reply = await (
@@ -359,7 +362,67 @@ export function memoryModel(
           .map((c) => (c as { text: string }).text)
           .join("");
       },
-    };
+    });
   }
-  return undefined;
+  return out;
+}
+
+/** The first model memory jobs would try; undefined when there is none. */
+export function memoryModel(
+  settings: ModelSettings,
+  secrets: SecretStore,
+  tiers?: TierPlacement,
+  env?: Record<string, string>,
+): MemoryModel | undefined {
+  return memoryModels(settings, secrets, tiers, env)[0];
+}
+
+/** A memory model that failed is passed over this long (ADR 0090). */
+export const MEMORY_MODEL_DOWN_MS = 10 * 60_000;
+/** One try on one memory model may take this long. */
+export const MEMORY_TRY_MS = 60_000;
+
+/**
+ * Runs a memory request on the first model that answers (ADR 0090). A model that fails or is too
+ * slow is passed over for MEMORY_MODEL_DOWN_MS; when every model is passed over, all are tried.
+ */
+export class MemoryModelChain {
+  private readonly models: () => MemoryModel[];
+  private readonly now: () => number;
+  private readonly log: ((line: string) => void) | undefined;
+  private readonly down = new Map<string, number>();
+
+  constructor(models: () => MemoryModel[], log?: (line: string) => void, now = Date.now) {
+    this.models = models;
+    this.log = log;
+    this.now = now;
+  }
+
+  async complete(system: string, user: string, signal: AbortSignal): Promise<string> {
+    const all = this.models();
+    if (all.length === 0) throw new Error("no model for memory");
+    const now = this.now();
+    const up = all.filter((m) => (this.down.get(m.ref) ?? 0) <= now);
+    const order = up.length > 0 ? up : all;
+    const errors: string[] = [];
+    for (const m of order) {
+      if (signal.aborted) break;
+      try {
+        const text = await m.complete(
+          system,
+          user,
+          AbortSignal.any([signal, AbortSignal.timeout(MEMORY_TRY_MS)]),
+        );
+        this.down.delete(m.ref);
+        return text;
+      } catch (error) {
+        if (signal.aborted) throw error;
+        const message = (error as Error).message;
+        errors.push(`${m.ref}: ${message}`);
+        this.down.set(m.ref, this.now() + MEMORY_MODEL_DOWN_MS);
+        this.log?.(`[memory] ${m.ref} failed (${message}); trying the next model`);
+      }
+    }
+    throw new Error(errors.join("; ") || "aborted");
+  }
 }

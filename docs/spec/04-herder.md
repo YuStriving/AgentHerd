@@ -426,6 +426,9 @@ New GitHub work is offered only when the owner asks for it ([ADR 0052](../adr/00
   likes, saves and new followers are never told. `social_watch` turns this off or on when the
   owner asks; `session_list` shows platforms. Agents use the account through `XIAOHONGSHU_` and
   `ZHIHU_` tools; writes ask (ADR 0056).
+  The Herder's system prompt ends with the connected accounts (signed in or not) and apps, rebuilt
+  on the next turn after one changes; a 小红书 or 知乎 link starts a read-only task at once when
+  that account is signed in (ADR 0089).
 - **News and this Mac's tools** (ADR 0059, ADR 0076, ADR 0077). `feed_read` reads GitHub Trending, Hacker News or
   arXiv; with `told: true` (a digest, often a schedule) the items are recorded and later reads
   mark them `[told before]`, which the Herder leaves out. `stock_quote` reads live stock and index
@@ -505,6 +508,19 @@ not a number: the result in a sentence or two when that is all they want, every 
 ask for a list, the whole of it when it matters. No filler, no steps, no 「结论：」 lines; when
 there is far too much, what matters plus where the rest is. The style text no longer carries
 "say less" or "under three sentences".
+
+It cares about the owner ([ADR 0088](../adr/0088-the-herder-cares-and-writes-plain-chinese.md)): after the answer, one short
+line when there is a reason. From midnight to 5 a.m. the time line before each message ends with
+"late at night", and the first reply after midnight ends with a line telling the owner to get some
+sleep (once a night). Tired, ill, upset, hours at it or a failure they cared about get one line
+that shows the Herder noticed. Empty politeness (「好的！」「希望对你有帮助」) stays out. The owner
+found a bare time at 01:55 cold (「这里其实我希望能回复一个早点睡」, 2026-11-20). Its Chinese reads
+like a person wrote it: no 「不是……而是……」 when nothing is compared, no opening or closing
+summary, no jargon (落地、对齐、钉死), full two-character words, no plan in front of the answer,
+nothing about what was ruled out, no trace of a corrected mistake, no remarks on how much work
+something is.
+Like a text message, no line of a reply ends with 「。」: AgentHerd drops it before the reply is
+said or kept (code and herd-ui blocks untouched); the owner: 「不要加句号」 (2026-11-20).
 
 It is written for a phone: several things with details of their own (repositories, options,
 files, findings) go one per line starting with "- ", never run together in one paragraph; a

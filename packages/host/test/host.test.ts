@@ -2,9 +2,15 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeChannel } from "@agentherd/channel-fake";
-import { type Herd, type HerderHost, type SecretStore, Store } from "@agentherd/core";
+import {
+  type Herd,
+  type HerderHost,
+  PROFILE_FIELDS,
+  type SecretStore,
+  Store,
+} from "@agentherd/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { DEFAULT_PET, type HostEvent } from "../src/api.ts";
+import { DEFAULT_PET, type HostEvent, PROFILE_FIELD_NAMES } from "../src/api.ts";
 import { readConfig, writeConfig } from "../src/config.ts";
 import { Host } from "../src/host.ts";
 import { connectHost, isHostRunning, serveApi, socketPath } from "../src/server.ts";
@@ -183,8 +189,11 @@ describe("Host", () => {
     });
     expect(readConfig(t.home).pet).toMatchObject({ on: false, figure: "claude" });
     expect(() => t.host.updateSettings({ pet: { figure: "cat" as never } })).toThrow(
-      /claude, deepseek/,
+      /deepseek, claude, frieren/,
     );
+    // The anime figures of ADR 0092 are kept like the others.
+    expect(t.host.updateSettings({ pet: { figure: "frieren" } }).pet.figure).toBe("frieren");
+    t.host.updateSettings({ pet: { figure: "claude" } });
     // Notifications and quiet hours (ADR 0079).
     expect(
       t.host.updateSettings({
@@ -478,5 +487,32 @@ describe("local API socket", () => {
     });
     await expect(client.host.removeService("nope")).rejects.toThrow(/no service "nope"/);
     expect((await client.host.providers()).some((p) => p.provider === "deepseek")).toBe(true);
+  });
+});
+
+describe("the owner's profile card (ADR 0091)", () => {
+  it("lists the same fields as core", () => {
+    expect([...PROFILE_FIELD_NAMES]).toEqual([...PROFILE_FIELDS]);
+  });
+
+  it("keeps a 称呼 set in the guide until AgentHerd runs, then writes it to memory", async () => {
+    const t = makeHost();
+    await t.host.start();
+    expect(t.host.ownerProfile()).toEqual({});
+    expect(t.host.setProfile("称呼", "  火哥 ")).toEqual({ 称呼: "火哥" });
+    expect(readConfig(t.home).profileWaiting).toEqual({ 称呼: "火哥" });
+    expect(() => t.host.setProfile("爱好" as "称呼", "爬山")).toThrow(/field must be one of/);
+    expect(() => t.host.setProfile("在做", "很".repeat(61))).toThrow(/at most 60/);
+
+    expect(t.host.setupFeishu().phase).toBe("starting");
+    await until(() => t.host.status().channel.connected);
+    expect(readConfig(t.home).profileWaiting).toBeUndefined();
+    const card = t.host.memories().entries.filter((e) => e.kind === "profile");
+    expect(card.map((e) => [e.abstract, e.source])).toEqual([["称呼：火哥", "owner_edit"]]);
+    expect(t.host.memories().used.profile).toBe(5);
+
+    expect(t.host.setProfile("在做", "AgentHerd")).toEqual({ 称呼: "火哥", 在做: "AgentHerd" });
+    expect(t.host.setProfile("称呼", "")).toEqual({ 在做: "AgentHerd" });
+    expect(t.host.memories().deleted.map((e) => e.abstract)).toContain("称呼：火哥");
   });
 });

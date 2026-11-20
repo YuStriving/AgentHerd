@@ -7,7 +7,10 @@ import {
   MEMORY_TABLES_SQL,
   MemoryFullError,
   MemoryStore,
+  PROFILE_FIELDS,
+  profileField,
   RESIDENT_CAPS,
+  RESIDENT_KINDS,
   Store,
 } from "../src/index.ts";
 
@@ -201,5 +204,45 @@ describe("MemoryStore", () => {
     migrated.memory.write([{ op: "add", kind: "owner", abstract: "用中文" }], herder);
     expect(migrated.memory.list()).toHaveLength(1);
     migrated.close();
+  });
+});
+
+describe("the owner's profile card (ADR 0091)", () => {
+  const owner = { actor: "owner", source: "owner_edit" } as const;
+
+  it("finds the field an entry is about", () => {
+    expect(profileField("称呼：火哥")).toBe("称呼");
+    expect(profileField("回答方式: 先说结论")).toBe("回答方式");
+    expect(profileField("在做")).toBeUndefined();
+    expect(profileField("爱好：爬山")).toBeUndefined();
+    expect(PROFILE_FIELDS).toContain("在意");
+  });
+
+  it("keeps one entry per field: a new one takes the old one's place", () => {
+    const m = Store.open(":memory:").memory;
+    m.write([{ op: "add", kind: "profile", abstract: "称呼：小火" }], owner);
+    m.write([{ op: "add", kind: "profile", abstract: "在做：AgentHerd" }], owner);
+    const { ids } = m.write([{ op: "add", kind: "profile", abstract: "称呼：火哥" }], owner);
+    const rows = m.list({ kinds: ["profile"] });
+    expect(rows.map((r) => r.abstract).sort()).toEqual(["在做：AgentHerd", "称呼：火哥"]);
+    const now = m.get(ids[0] as string);
+    expect(now?.rev).toBe(2);
+    expect(m.list({ status: "all" }).find((r) => r.abstract === "称呼：小火")?.status).toBe(
+      "superseded",
+    );
+  });
+
+  it("is resident and has its own cap", () => {
+    const m = Store.open(":memory:").memory;
+    expect(RESIDENT_KINDS).toContain("profile");
+    m.write([{ op: "add", kind: "profile", abstract: `在意：${"很".repeat(150)}` }], owner);
+    expect(m.used("profile")).toBe(153);
+    for (const field of ["身份", "在做"]) {
+      m.write([{ op: "add", kind: "profile", abstract: `${field}：${"字".repeat(150)}` }], owner);
+    }
+    expect(() =>
+      m.write([{ op: "add", kind: "profile", abstract: `喜好：${"多".repeat(150)}` }], owner),
+    ).toThrow(MemoryFullError);
+    expect(RESIDENT_CAPS.profile).toBe(600);
   });
 });

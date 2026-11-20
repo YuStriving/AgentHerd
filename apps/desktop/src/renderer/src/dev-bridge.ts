@@ -64,6 +64,7 @@ import {
   sampleTranscript,
   sampleWatches,
 } from "./dev-fixtures";
+import { fakeProfile, profileFieldOf } from "./profile";
 
 type Listener<T> = (value: T) => void;
 
@@ -987,6 +988,24 @@ function installFakeBridge(): void {
           gone === undefined ? memory.deleted : [{ ...gone, status: "deleted" }, ...memory.deleted],
       };
       return delay(memory);
+    },
+    ownerProfile: () => delay(fakeProfile(memory)),
+    setProfile: (field, value) => {
+      const text = value.trim();
+      const rest = memory.entries.filter(
+        (e) => !(e.kind === "profile" && profileFieldOf(e.abstract) === field),
+      );
+      const added = {
+        ...(memory.entries.find((e) => e.kind === "profile") ?? memory.entries[0]),
+        id: `p-${field}-${Date.now()}`,
+        kind: "profile" as const,
+        abstract: `${field}：${text}`,
+        source: "owner_edit" as const,
+        rev: 1,
+      };
+      const { evidence: _, ...entry } = added;
+      memory = { ...memory, entries: text === "" ? rest : [entry, ...rest] };
+      return delay(fakeProfile(memory));
     },
     restoreMemory: (id) => {
       const back = memory.deleted.find((e) => e.id === id);

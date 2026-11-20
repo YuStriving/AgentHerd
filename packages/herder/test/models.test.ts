@@ -14,6 +14,8 @@ import {
   herderFallbacks,
   herderFromSettings,
   knownInput,
+  MEMORY_MODEL_DOWN_MS,
+  MemoryModelChain,
   PI_KEY_ENV,
   PI_MODEL_ENV,
   piModelEnv,
@@ -205,5 +207,62 @@ describe("piModelEnv", () => {
       baseUrl: "https://api.deepseek.com",
     });
     expect(choice.env[PI_MODEL_ENV]).not.toContain("sk-pi-secret");
+  });
+});
+
+describe("memory models fall back (ADR 0090)", () => {
+  function fake(ref: string, answer: string | Error, seen: string[]) {
+    return {
+      ref,
+      complete: async () => {
+        seen.push(ref);
+        if (answer instanceof Error) throw answer;
+        return answer;
+      },
+    };
+  }
+
+  it("tries the next model when one fails, then passes the failed one over for a while", async () => {
+    const seen: string[] = [];
+    let now = 1_000;
+    const logs: string[] = [];
+    const chain = new MemoryModelChain(
+      () => [
+        fake("site/gpt-6-luna", new Error("Request timed out."), seen),
+        fake("deepseek/deepseek-flash", "{}", seen),
+      ],
+      (line) => logs.push(line),
+      () => now,
+    );
+    const signal = new AbortController().signal;
+    expect(await chain.complete("s", "u", signal)).toBe("{}");
+    expect(seen).toEqual(["site/gpt-6-luna", "deepseek/deepseek-flash"]);
+    expect(logs[0]).toContain("site/gpt-6-luna failed (Request timed out.)");
+    expect(await chain.complete("s", "u", signal)).toBe("{}");
+    expect(seen.slice(2)).toEqual(["deepseek/deepseek-flash"]);
+    now += MEMORY_MODEL_DOWN_MS + 1;
+    await chain.complete("s", "u", signal);
+    expect(seen.slice(3)).toEqual(["site/gpt-6-luna", "deepseek/deepseek-flash"]);
+  });
+
+  it("tries every model when all are passed over, and says what each one answered", async () => {
+    const seen: string[] = [];
+    const chain = new MemoryModelChain(() => [
+      fake("a/x", new Error("401"), seen),
+      fake("b/y", new Error("Request timed out."), seen),
+    ]);
+    const signal = new AbortController().signal;
+    await expect(chain.complete("s", "u", signal)).rejects.toThrow(
+      "a/x: 401; b/y: Request timed out.",
+    );
+    await expect(chain.complete("s", "u", signal)).rejects.toThrow("a/x: 401");
+    expect(seen).toEqual(["a/x", "b/y", "a/x", "b/y"]);
+  });
+
+  it("says so when no model is set up", async () => {
+    const chain = new MemoryModelChain(() => []);
+    await expect(chain.complete("s", "u", new AbortController().signal)).rejects.toThrow(
+      "no model for memory",
+    );
   });
 });

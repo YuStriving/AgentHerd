@@ -33,6 +33,11 @@ export interface CliConfig {
   danjuan?: { enabled?: boolean; acceptedAt?: string };
   /** The owner's Obsidian vault, told to every new task (ADR 0059). */
   obsidianVault?: string;
+  /**
+   * Profile fields the owner set while AgentHerd was not running (ADR 0091), e.g. 称呼 in the
+   * first-run guide; written to memory when it starts. "" clears the field.
+   */
+  profileWaiting?: Partial<Record<string, string>>;
   /** The desktop pet (ADR 0070); DEFAULT_PET where missing. */
   pet?: Partial<import("./api.ts").PetSettings>;
 }

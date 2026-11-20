@@ -29,6 +29,7 @@ import { type KeyboardEvent, type ReactNode, useEffect, useState } from "react";
 import { isQuiet, quietLine, snoozeUntil } from "../../../shared/pet-notify";
 import { type ShortcutState, shortcutLabel, shortcutOf } from "../../../shared/pet-shortcuts";
 import { FeishuSection } from "../components/FeishuSection";
+import { FigurePicker } from "../components/FigurePicker";
 import {
   Button,
   Group,
@@ -40,14 +41,8 @@ import {
   Switch,
 } from "../components/ui";
 import { FONT_SCALES, setFontScale, useFontScale } from "../font-scale";
-import { FIGURE_CREDIT, FIGURES } from "../pet/figures";
 import { isMac } from "../platform";
 import { call, type Mode, useApp } from "../store";
-
-const PET_FIGURE_OPTIONS = (Object.keys(FIGURES) as PetFigure[]).map((value) => ({
-  value,
-  label: FIGURES[value].name,
-}));
 
 const MODES: { mode: Mode; title: string; hint: string; icon: typeof Eye }[] = [
   {
@@ -165,16 +160,15 @@ export function SettingsPage() {
               </IconTile>
             }
             title="形象"
-            description={FIGURE_CREDIT}
-            trailing={
-              <Segmented
-                label="形象"
-                options={PET_FIGURE_OPTIONS}
-                value={status.pet?.figure ?? "deepseek"}
-                onChange={(figure) => void update({ pet: { figure } })}
-              />
-            }
+            description="点一个换上；下面写着它是谁画的、从哪来"
           />
+          <div className="px-4 pt-1 pb-4">
+            <FigurePicker
+              figure={status.pet?.figure ?? "deepseek"}
+              disabled={busy || status.pet === undefined}
+              pick={(figure: PetFigure) => void update({ pet: { figure } })}
+            />
+          </div>
           {status.pet?.suggest !== undefined && (
             <Row
               icon={

@@ -436,6 +436,7 @@ const zh: CoreTexts = {
       "不要调用工具。",
     ].join("\n"),
   memoryKinds: {
+    profile: "画像",
     owner: "关于你",
     decision: "定了的事",
     person: "人",
@@ -652,6 +653,7 @@ const en: CoreTexts = {
       "Do not call tools.",
     ].join("\n"),
   memoryKinds: {
+    profile: "Profile",
     owner: "About you",
     decision: "Decisions",
     person: "People",

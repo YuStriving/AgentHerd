@@ -1,11 +1,13 @@
 // 记忆: what the Herder remembers (ADR 0038), by kind. The owner can change the text of an entry,
-// forget it, or bring a forgotten one back. The same as /记忆 /忘掉 /恢复 in Feishu.
+// forget it, or bring a forgotten one back. The same as /记忆 /忘掉 /恢复 in Feishu. The owner's
+// profile card comes first and shows every field, filled or not (ADR 0091).
 
 import type { MemoryView } from "@agentherd/host/api";
-import { Brain, Pencil, RotateCcw, Trash2 } from "lucide-react";
+import { Brain, Pencil, RotateCcw, Trash2, UserRound } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Badge, Button, EmptyState, Group, Section } from "../components/ui";
 import { pathLeaf } from "../platform";
+import { PROFILE_LABELS, type ProfileRow, profileRows } from "../profile";
 import { call } from "../store";
 
 type Entry = MemoryView["entries"][number];
@@ -39,6 +41,97 @@ function day(iso: string): string {
 function projectName(scope: string): string | undefined {
   if (!scope.startsWith("project:")) return undefined;
   return pathLeaf(scope.slice("project:".length));
+}
+
+function ProfileField({ row, onChange }: { row: ProfileRow; onChange: (v: MemoryView) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(row.value);
+  const { label, empty } = PROFILE_LABELS[row.field];
+  const save = async (value: string) => {
+    const saved = await call((h) => h.setProfile(row.field, value));
+    if (saved === undefined) return;
+    const v = await call((h) => h.memories());
+    if (v !== undefined) onChange(v);
+    setEditing(false);
+  };
+  return (
+    <div className="flex flex-col gap-1 px-4 py-2.5">
+      <div className="flex items-center gap-3">
+        <span className="w-[88px] shrink-0 text-ink-muted text-sm">{label}</span>
+        {editing ? (
+          <form
+            className="flex min-w-0 flex-1 items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void save(text);
+            }}
+          >
+            <input
+              className="ah-input h-8 min-w-0 flex-1"
+              value={text}
+              maxLength={60}
+              aria-label={label}
+              autoFocus
+              onChange={(e) => setText(e.target.value)}
+            />
+            <Button variant="primary" size="sm" type="submit">
+              保存
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setText(row.value);
+                setEditing(false);
+              }}
+            >
+              取消
+            </Button>
+          </form>
+        ) : (
+          <>
+            <span
+              className={`min-w-0 flex-1 text-md ${row.value === "" ? "text-ink-dim" : "text-ink"}`}
+            >
+              {row.value === "" ? empty : row.value}
+            </span>
+            <div className="flex shrink-0 items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label={`修改${label}`}
+                onClick={() => {
+                  setText(row.value);
+                  setEditing(true);
+                }}
+              >
+                <Pencil size={13} />
+              </Button>
+              {row.value !== "" && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label={`清空${label}`}
+                  onClick={() => void save("")}
+                >
+                  <Trash2 size={13} />
+                </Button>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+      {row.entry !== undefined && !editing && (
+        <div className="flex flex-wrap items-center gap-1.5 pl-[100px] text-ink-muted text-xs">
+          <Badge>{SOURCE[row.entry.source]}</Badge>
+          <span>{day(row.entry.updatedAt)}</span>
+          {row.entry.evidence !== undefined && (
+            <span className="min-w-0 truncate">· 依据：「{row.entry.evidence}」</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function EntryRow({ entry, onChange }: { entry: Entry; onChange: (v: MemoryView) => void }) {
@@ -146,19 +239,38 @@ export function MemoryPage() {
       </Group>
     );
   }
-  if (view.entries.length === 0 && view.deleted.length === 0) {
-    return (
-      <Group>
-        <EmptyState
-          icon={<Brain size={18} />}
-          title="主管还没记住什么"
-          text="你在飞书里说「以后都…」「记住…」，或者任务做完后，主管会把值得长期记住的写在这里。"
-        />
-      </Group>
-    );
-  }
+  const others = view.entries.filter((e) => e.kind !== "profile");
   return (
     <div className="flex flex-col gap-6">
+      <Section
+        title="你的画像"
+        hint="主管从聊天里看出来的你：怎么称呼、在做什么、习惯和喜好。每次都会看，不对就改"
+        actions={
+          <span className="flex items-center gap-1 text-ink-muted text-xs">
+            <UserRound size={12} />
+            {view.used.profile}/{view.caps.profile} 字
+          </span>
+        }
+      >
+        <Group>
+          {profileRows(view.entries).map((row) => (
+            <ProfileField
+              key={`${row.field}-${row.entry?.id ?? ""}`}
+              row={row}
+              onChange={setView}
+            />
+          ))}
+        </Group>
+      </Section>
+      {others.length === 0 && view.deleted.length === 0 && (
+        <Group>
+          <EmptyState
+            icon={<Brain size={18} />}
+            title="主管还没记住别的"
+            text="你在飞书里说「以后都…」「记住…」，或者任务做完后，主管会把值得长期记住的写在这里。"
+          />
+        </Group>
+      )}
       {KINDS.map(({ kind, label, hint }) => {
         const rows = view.entries.filter((e) => e.kind === kind);
         if (rows.length === 0) return null;

@@ -49,7 +49,7 @@ describe("memory vectors", () => {
     const worker = new MemoryWorker({
       memory: store.memory,
       transcript: () => [],
-      herderTurns: () => [],
+      herderTurnsAfter: () => [],
       embedder,
     });
     await worker.drain();
@@ -63,7 +63,7 @@ describe("memory vectors", () => {
     await new MemoryWorker({
       memory: store.memory,
       transcript: () => [],
-      herderTurns: () => [],
+      herderTurnsAfter: () => [],
       embedder,
     }).fillVectors();
     // "签名" is a 2-character word; the vector still points at the signing case.

@@ -181,14 +181,33 @@ export interface HerderActivityView {
   total: number;
 }
 
+/**
+ * Fields of the owner's profile card (ADR 0091), in the order the app shows them. The same list as
+ * PROFILE_FIELDS in @agentherd/core; kept here because this file has no runtime imports.
+ */
+export const PROFILE_FIELD_NAMES = [
+  "称呼",
+  "身份",
+  "在做",
+  "作息",
+  "回答方式",
+  "喜好",
+  "在意",
+] as const;
+export type ProfileFieldName = (typeof PROFILE_FIELD_NAMES)[number];
+/** The owner's profile card: the value of each field it has. */
+export type OwnerProfile = Partial<Record<ProfileFieldName, string>>;
+/** Characters one profile field may hold. */
+export const PROFILE_VALUE_MAX = 60;
+
 /** The Herder's long-term memory for the 记忆 page (ADR 0038). */
 export interface MemoryView {
   /** Active entries, newest first, and the last deleted ones (to restore). */
   entries: MemoryRow[];
   deleted: MemoryRow[];
   /** Characters used and allowed of the kinds kept in the Herder's prompt. */
-  used: { owner: number; decision: number; note: number };
-  caps: { owner: number; decision: number; note: number };
+  used: { profile: number; owner: number; decision: number; note: number };
+  caps: { profile: number; owner: number; decision: number; note: number };
   /** False while AgentHerd is not following tasks (no herd): nothing to show or change. */
   ready: boolean;
 }
@@ -288,8 +307,30 @@ export interface SettingsPatch {
   pet?: Partial<PetSettings>;
 }
 
-/** The two figures that come with the app (ADR 0070). */
-export const PET_FIGURES = ["claude", "deepseek"] as const;
+/**
+ * The figures that come with the app: two from llm-pet (ADR 0070) and sixteen anime figures from
+ * awesome-codex-pet (ADR 0092). Where each comes from is in the desktop's pet/figures.ts.
+ */
+export const PET_FIGURES = [
+  "deepseek",
+  "claude",
+  "frieren",
+  "bocchi",
+  "nijika",
+  "kita",
+  "ryo",
+  "emilia",
+  "reze",
+  "mikoto",
+  "miku",
+  "chiikawa",
+  "hachiware",
+  "toothless",
+  "luoxiaohei",
+  "tushansusu",
+  "hanli",
+  "wukong",
+] as const;
 export type PetFigure = (typeof PET_FIGURES)[number];
 
 export interface PetSettings {
@@ -641,6 +682,13 @@ export interface HostApi {
   editMemory(id: string, text: string): MemoryView;
   forgetMemory(id: string): MemoryView;
   restoreMemory(id: string): MemoryView;
+  /** The owner's profile card (ADR 0091), with fields set before AgentHerd first ran. */
+  ownerProfile(): OwnerProfile;
+  /**
+   * Sets one field of the owner's profile card; "" clears it. While AgentHerd is not running (the
+   * first-run guide), the value waits in config.json and is written when it starts.
+   */
+  setProfile(field: ProfileFieldName, value: string): OwnerProfile;
   /** Schedules are made in chat; the app shows them and can pause or remove one. */
   schedules(): SchedulesView;
   setSchedulePaused(id: string, paused: boolean): SchedulesView;
@@ -748,6 +796,8 @@ export const HOST_METHODS: readonly HostMethod[] = [
   "herderActivity",
   "memories",
   "editMemory",
+  "ownerProfile",
+  "setProfile",
   "forgetMemory",
   "restoreMemory",
   "schedules",

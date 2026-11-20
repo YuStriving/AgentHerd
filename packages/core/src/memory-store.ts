@@ -8,6 +8,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { redact } from "@agentherd/rules";
 
 export const MEMORY_KINDS = [
+  "profile",
   "owner",
   "decision",
   "person",
@@ -19,15 +20,30 @@ export const MEMORY_KINDS = [
 export type MemoryKind = (typeof MEMORY_KINDS)[number];
 
 /** Kinds kept in the Herder's system prompt; the others are found by search. */
-export const RESIDENT_KINDS: readonly MemoryKind[] = ["owner", "decision", "note"];
-export type ResidentKind = "owner" | "decision" | "note";
+export const RESIDENT_KINDS = ["profile", "owner", "decision", "note"] as const;
+export type ResidentKind = (typeof RESIDENT_KINDS)[number];
 
 /** Characters of `abstract` all active entries of a resident kind may hold together. */
 export const RESIDENT_CAPS: Record<ResidentKind, number> = {
+  profile: 600,
   owner: 1375,
   decision: 2200,
   note: 2200,
 };
+
+/**
+ * What the owner's profile card holds (ADR 0091): one entry per field, written 「称呼：火哥」. A new
+ * entry for a field the card already has takes the old one's place.
+ */
+export const PROFILE_FIELDS = ["称呼", "身份", "在做", "作息", "回答方式", "喜好", "在意"] as const;
+export type ProfileField = (typeof PROFILE_FIELDS)[number];
+
+/** The field a profile entry is about, e.g. 「称呼」 for 「称呼：火哥」; undefined when it names none. */
+export function profileField(abstract: string): ProfileField | undefined {
+  const m = /^\s*([^：:]{1,8})\s*[：:]\s*\S/.exec(abstract);
+  const name = m?.[1]?.trim();
+  return PROFILE_FIELDS.find((f) => f === name);
+}
 
 export const ABSTRACT_MAX_CHARS = 200;
 export const BODY_MAX_CHARS = 4000;
@@ -360,7 +376,7 @@ export class MemoryStore {
     this.db.exec("BEGIN");
     try {
       for (const op of ops) ids.push(this.apply(op, meta, batchId, at));
-      for (const kind of ["owner", "decision", "note"] as const) {
+      for (const kind of RESIDENT_KINDS) {
         const used = this.used(kind);
         if (used > RESIDENT_CAPS[kind] && ops.some((o) => this.touches(o, kind))) {
           throw new MemoryFullError(kind, used, RESIDENT_CAPS[kind], []);
@@ -389,6 +405,26 @@ export class MemoryStore {
   }
 
   private apply(op: MemoryOp, meta: WriteMeta, batchId: string, at: string): string {
+    if (op.op === "add" && op.kind === "profile") {
+      // One entry per field: 「称呼：火哥」 replaces the card's old 称呼 (ADR 0091).
+      const field = profileField(op.abstract);
+      const old = this.list({ kinds: ["profile"] }).find((r) => profileField(r.abstract) === field);
+      if (field !== undefined && old !== undefined) {
+        return this.apply(
+          {
+            op: "replace",
+            id: old.id,
+            abstract: op.abstract,
+            ...(op.body === undefined ? {} : { body: op.body }),
+            ...(op.evidence === undefined ? {} : { evidence: op.evidence }),
+            ...(op.until === undefined ? {} : { until: op.until }),
+          },
+          meta,
+          batchId,
+          at,
+        );
+      }
+    }
     if (op.op === "add") {
       const id = randomUUID();
       this.insert(

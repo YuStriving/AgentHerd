@@ -103,8 +103,12 @@ export {
   type HerderChoice,
   herderFallbacks,
   herderFromSettings,
+  MEMORY_MODEL_DOWN_MS,
+  MEMORY_TRY_MS,
   type MemoryModel,
+  MemoryModelChain,
   memoryModel,
+  memoryModels,
   notReadyReason,
   PI_KEY_ENV,
   PI_MODEL_ENV,
@@ -133,7 +137,7 @@ export {
   VOICE_REPLY_MAX,
   voicePrompt,
 } from "./prompt.ts";
-export { STYLE_SOURCE, stylePrompt } from "./style.ts";
+export { STYLE_SOURCE, stylePrompt, withoutEndPeriods } from "./style.ts";
 export {
   filterSuggestion,
   SUGGEST_MAX_CHARS,

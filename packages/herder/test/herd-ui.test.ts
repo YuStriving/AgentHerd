@@ -43,7 +43,7 @@ describe("herd-ui in the Herder (ADR 0074)", () => {
         const first = context.messages[0] as { content: unknown } | undefined;
         system =
           typeof first?.content === "string" ? first.content : JSON.stringify(first?.content);
-        return fauxAssistantMessage("好。");
+        return fauxAssistantMessage("好");
       },
     ]);
     herder.ownerMessage("在吗");
@@ -58,7 +58,7 @@ describe("herd-ui in the Herder (ADR 0074)", () => {
     // A picture to look at is shown, not named by its path (ADR 0075).
     expect(system).toContain("![飞书邮箱授权码](/tmp/lark-mail-auth.png)");
     expect(system).toContain("Do it also when a task's message only");
-    expect(rec.said).toEqual(["好。"]);
+    expect(rec.said).toEqual(["好"]);
   });
 
   it("sends a readable block repaired, without a rewrite", async () => {
@@ -121,7 +121,7 @@ describe("herd-ui in the Herder (ADR 0074)", () => {
     faux.setResponses([fauxAssistantMessage(broken), fauxAssistantMessage(broken)]);
     herder.ownerMessage("看看这两个仓库");
     await herder.idle();
-    expect(rec.said).toEqual(["两个都还活跃。"]);
+    expect(rec.said).toEqual(["两个都还活跃"]);
     expect(rec.audits.find((a) => a.type === "herder.ui.rewrite")?.data).toMatchObject({
       fixed: false,
     });

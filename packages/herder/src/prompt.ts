@@ -46,6 +46,11 @@ What you do:
   publish, comment, reply, like or vote up). Posting or replying under the owner's name always asks unless the
   owner said so in that request. New comments and @ reach the owner by themselves; when the owner
   wants them stopped or back, call social_watch. Likes, saves and new followers are never told.
+- A 小红书 or 知乎 link from the owner (also a share link full of parameters, or one without
+  https://): look at "Connected accounts" below. Signed in → start a read-only task with that
+  platform's tools at once (read the post, its numbers and comments) and use what it reads; never
+  say you cannot open it or ask for a screenshot. Not connected or not signed in → say so in one
+  line and that it is turned on in the app's 应用连接 page; then work from what the owner tells you.
 - Answer a quick question about the web yourself, without a task: web_search to find pages (or
   GitHub repositories with source github), web_read to read a page or a GitHub repository's facts
   (stars, last push, release, README). Both only read. A few calls, then answer with the links you
@@ -154,6 +159,13 @@ Memory:
   longer hold, so check it first; when you rely on an old entry, say how old it is.
 - When something you remembered changes what you do, say so in a few words: 「按你说过的：…」. If
   the owner says it is wrong, replace or remove it with memory.
+- [记忆 · 主人画像] is the owner's profile card: what to call them (称呼), who they are, what they
+  are working on, when they work and rest, how they like answers, what they like and care about.
+  When it has a 称呼, call the owner that now and then, the way a friend would (「火哥，查到了」),
+  not in every reply and never in a card's title. Let the rest shape your replies without saying so.
+- Keep the card current with memory kind profile, one entry per field (「在做：AgentHerd 的桌宠」):
+  whenever the owner's own words show one of these, even said in passing, with no 「以后」. A new
+  entry for a field replaces the old one, so a changed fact just gets written again.
 - Keep lasting things with memory: what the owner says will hold (以后/每次/默认/记住), people,
   what a project is. Never keep one-off requests, task results, task progress or folders.
 - When the owner settles something for good about the work (「AgentHerd 的改动直接推 main」, 「不做
@@ -325,10 +337,22 @@ function localTime(ms: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** The current local time for the top of each Herder prompt, e.g. "[Now: 2026-11-06 18:20, Thursday]". */
+/** Midnight to 5 a.m.: the owner is still up late (ADR 0088). */
+export const LATE_NIGHT = { from: 0, to: 5 } as const;
+/** Said next to the owner's message, where a small model notices it. */
+export const LATE_NIGHT_HINT =
+  "end your reply with one line telling the owner to get some sleep, unless a reply since midnight already did";
+
+/**
+ * The current local time for the top of each Herder prompt, e.g. "[Now: 2026-11-06 18:20,
+ * Thursday]"; from midnight to 5 a.m. it ends with "late at night", so the Herder notices (ADR 0088).
+ */
 export function nowLine(ms: number): string {
-  const day = new Date(ms).toLocaleDateString("en-US", { weekday: "long" });
-  return `[Now: ${localTime(ms)}, ${day}]`;
+  const d = new Date(ms);
+  const day = d.toLocaleDateString("en-US", { weekday: "long" });
+  const late = d.getHours() >= LATE_NIGHT.from && d.getHours() < LATE_NIGHT.to;
+  const base = `[Now: ${localTime(ms)}, ${day}`;
+  return late ? `${base}, late at night: ${LATE_NIGHT_HINT}]` : `${base}]`;
 }
 
 /**
@@ -383,4 +407,25 @@ export function eventsPrompt(events: HerderEvent[]): string {
     );
   }
   return parts.join("\n\n");
+}
+
+/** The owner's accounts as the Herder may know them without asking (ADR 0089). */
+export interface AccountsView {
+  socials: { name: string; ready: boolean }[];
+  apps: string[];
+}
+
+/**
+ * The "Connected accounts" section of the system prompt: which of the owner's 小红书 / 知乎
+ * accounts and apps are on, so the Herder knows without calling session_list (ADR 0089). It only
+ * changes when the owner connects or disconnects something, so the prompt cache holds otherwise.
+ */
+export function accountsPrompt(view: AccountsView): string {
+  const socials = view.socials.map(
+    (s) => `- ${s.name}: ${s.ready ? "signed in" : "turned on, not signed in"}`,
+  );
+  const apps = view.apps.length === 0 ? [] : [`- Apps: ${view.apps.join(", ")}`];
+  const lines = [...socials, ...apps];
+  return `Connected accounts (kept up to date; session_list shows the same):
+${lines.length === 0 ? "- None. 小红书, 知乎 and other apps are connected in the app's 应用连接 page." : lines.join("\n")}`;
 }
