@@ -231,6 +231,11 @@ export class Herd {
   }
 
   /** Replaces the Herder, e.g. after the owner chose another model. `undefined` turns it off. */
+  /** The Herder now, if there is one. */
+  herderPort(): HerderPort | undefined {
+    return this.herder;
+  }
+
   async setHerder(factory: HerderFactory | undefined): Promise<void> {
     const old = this.herder;
     this.herder = undefined;
@@ -373,11 +378,13 @@ export class Herd {
       noticeLevels: () => noticeLevels(this.store),
       setNoticeLevel: (kind, level) => setNoticeLevel(this.store, kind, level),
       audit: (type, data) => this.store.audit(type, data),
+      recordRequest: (request) => this.store.addHerderRequest(request),
       recordTurn: (role, text, taskId) => {
         this.store.addHerderTurn(role, text, taskId);
         this.opts.herderTurnAdded?.();
       },
       ...(this.opts.suggestion === undefined ? {} : { suggestion: this.opts.suggestion }),
+      ...(this.opts.plugins === undefined ? {} : { plugins: this.opts.plugins }),
       memory: this.store.memory,
       ...(this.opts.embedder === undefined ? {} : { embedder: this.opts.embedder }),
       ...(this.opts.memoryComplete === undefined
@@ -387,6 +394,10 @@ export class Herd {
       setState: (key, value) => this.store.setState(key, value),
       herderLog: () => this.store.herderLog(),
       writeHerderLog: (from, messages) => this.store.writeHerderLog(from, messages),
+      herderFolds: () => this.store.herderFolds(),
+      saveHerderContext: (key, state, folds) => this.store.saveHerderContext(key, state, folds),
+      recordPrompt: (prompt) => this.store.putHerderPrompt(prompt),
+      herderEvent: (kind, data, round) => this.store.addHerderEvent(kind, data, round),
     };
   }
 

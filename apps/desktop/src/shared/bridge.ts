@@ -3,6 +3,7 @@
 
 import type { HostEvent, RemoteHost } from "@agentherd/host/api";
 import type { PetArm, ShortcutState } from "./pet-shortcuts.ts";
+import type { Theme } from "./theme.ts";
 
 export interface PetRegion {
   x: number;
@@ -88,6 +89,11 @@ export interface Bridge {
     state(): Promise<ShortcutState>;
     onState(listener: (state: ShortcutState) => void): () => void;
     pause(paused: boolean): void;
+  };
+  /** The app's colours (设置 → 外观 → 颜色): system, light or dark. Missing in older builds. */
+  theme?: {
+    get(): Promise<Theme>;
+    set(theme: Theme): Promise<void>;
   };
   /** The pet asked the main window to show a task. Returns an unsubscribe function. */
   onOpenTask?(listener: (taskId: string) => void): () => void;

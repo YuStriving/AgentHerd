@@ -413,7 +413,15 @@ export function eventsPrompt(events: HerderEvent[]): string {
 export interface AccountsView {
   socials: { name: string; ready: boolean }[];
   apps: string[];
+  /** Plugins the owner let the Herder use (ADR 0094). */
+  plugins?: {
+    tools: { name: string; description: string }[];
+    skills: { name: string; description: string }[];
+  };
 }
+
+/** One line per plugin tool or skill, each description cut at this. */
+const PLUGIN_LINE_MAX = 160;
 
 /**
  * The "Connected accounts" section of the system prompt: which of the owner's 小红书 / 知乎
@@ -426,6 +434,20 @@ export function accountsPrompt(view: AccountsView): string {
   );
   const apps = view.apps.length === 0 ? [] : [`- Apps: ${view.apps.join(", ")}`];
   const lines = [...socials, ...apps];
-  return `Connected accounts (kept up to date; session_list shows the same):
+  const head = `Connected accounts (kept up to date; session_list shows the same):
 ${lines.length === 0 ? "- None. 小红书, 知乎 and other apps are connected in the app's 应用连接 page." : lines.join("\n")}`;
+  const tools = view.plugins?.tools ?? [];
+  const skills = view.plugins?.skills ?? [];
+  if (tools.length === 0 && skills.length === 0) return head;
+  const cut = (t: string) => {
+    const one = t.replace(/\s+/g, " ").trim();
+    return one.length > PLUGIN_LINE_MAX ? `${one.slice(0, PLUGIN_LINE_MAX)}…` : one;
+  };
+  return `${head}
+
+Plugins the owner let you use (ADR 0094). Read-only tools go through plugin_call, skills through plugin_skill; tasks get every plugin that is on by themselves:
+${[
+  ...tools.map((t) => `- tool ${t.name}${t.description === "" ? "" : `: ${cut(t.description)}`}`),
+  ...skills.map((s) => `- skill ${s.name}${s.description === "" ? "" : `: ${cut(s.description)}`}`),
+].join("\n")}`;
 }

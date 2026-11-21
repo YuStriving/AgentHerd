@@ -5,6 +5,10 @@
 
 import type {
   CustomApi,
+  HerderContextItem,
+  HerderContextParts,
+  HerderFoldBy,
+  HerderFoldState,
   MemoryRow,
   ModelRef,
   ModelRole,
@@ -24,6 +28,14 @@ import type {
   Risk,
   TextView,
 } from "@agentherd/protocol";
+
+export type {
+  HerderContextItem,
+  HerderContextPart,
+  HerderContextParts,
+  HerderFoldBy,
+  HerderFoldState,
+} from "@agentherd/core";
 
 export const API_VERSION = 1;
 
@@ -171,6 +183,180 @@ export interface HerderIncident {
   /** The audit kind, e.g. "herder.error". */
   kind: string;
   data: Record<string, unknown>;
+}
+
+/** Token counts of a span of the Herder's requests (ADR 0093). */
+export interface HerderUsage {
+  requests: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** Share of the input the provider read from its cache, 0–1; 0 without requests. */
+  hitRate: number;
+  /** Dollars, as the providers said; 0 when they did not say. */
+  cost: number;
+}
+
+export interface HerderUsageDay extends HerderUsage {
+  /** Local day, YYYY-MM-DD. */
+  day: string;
+}
+
+/** One request the Herder made (ADR 0095). */
+export interface HerderRequestView {
+  at: string;
+  model: string;
+  /** Size of the prompt as the provider counted it (else our estimate). */
+  tokens: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+  /** Where its reply sits, and the round it belongs to. */
+  seq?: number;
+  round?: number;
+  /** Our estimate of its parts; only for requests since ADR 0093. */
+  parts?: HerderContextParts;
+  failed?: boolean;
+}
+
+/** What the next request would send, rebuilt from herd.db (ADR 0095). */
+export interface HerderContextNow {
+  tokens: number;
+  /** The working window (the model's, at most 128K) and where AgentHerd folds by itself. */
+  window: number;
+  foldAt: number;
+  parts: HerderContextParts;
+  /** Each piece, its text cut short; `herderMessages` gives the whole of a message. */
+  items: (HerderContextItem & { seq?: number })[];
+  /** No system prompt kept yet (before the Herder's first request on this version). */
+  noPrompt?: boolean;
+}
+
+/** A stretch of the conversation as the model sees it: one fold, or messages as they were. */
+export type HerderContextSegment =
+  | {
+      kind: "fold";
+      blockId: string;
+      startSeq: number;
+      endSeq: number;
+      messages: number;
+      tokensBefore: number;
+      tokensAfter: number;
+    }
+  | { kind: "raw"; startSeq: number; endSeq: number; messages: number; tokens: number };
+
+/** A fold with what the tab needs to place it (ADR 0095). */
+export interface HerderFoldView {
+  blockId: string;
+  parent?: string;
+  /** Folds directly inside it. */
+  children: string[];
+  level: number;
+  state: HerderFoldState;
+  by: HerderFoldBy;
+  topic?: string;
+  summary: string;
+  startSeq: number;
+  endSeq: number;
+  messages: number;
+  rounds: number;
+  /** Messages of each kind (owner, task, reply, call, result…). */
+  kinds: Record<string, number>;
+  /** Times of its first and last message. */
+  startAt: string;
+  endAt: string;
+  callSeq?: number;
+  /**
+   * Where the model reads its summary: in its compress call (still in view), as a note in its
+   * place, inside the fold that took it in, or nowhere (opened).
+   */
+  summaryAt: "call" | "note" | "parent" | "none";
+  tokensBefore: number;
+  tokensAfter: number;
+  createdAt: string;
+  /** Not made yet: the next request would fold this by itself (90 % full). */
+  pending?: boolean;
+}
+
+/** A round: the Herder woken once, by the owner, a task, an event or a schedule. */
+export interface HerderRoundView {
+  seq: number;
+  endSeq: number;
+  at: string;
+  kind: string;
+  title: string;
+  messages: number;
+  tokens: number;
+  /** The innermost fold it sits in; none when the model reads it as it was. */
+  fold?: string;
+}
+
+/** One message of the conversation, for the tree and the browser. */
+export interface HerderMessageView {
+  seq: number;
+  at: string;
+  role: string;
+  kind: string;
+  tool?: string;
+  round: number;
+  tokens: number;
+  /** Its text, cut to 2,000 characters; `more` says how much was left out. */
+  text: string;
+  more: number;
+}
+
+export interface HerderEventView {
+  at: string;
+  kind: string;
+  round?: number;
+  data: Record<string, unknown>;
+}
+
+/** The 上下文 tab of the 主管 page, read from herd.db alone (ADR 0093, ADR 0095). */
+export interface HerderContextView {
+  /** Changes whenever anything shown changes; pass it back to get `unchanged`. */
+  key: string;
+  /** Whether a Herder is running now. */
+  on: boolean;
+  now?: HerderContextNow;
+  /** Why `now` could not be rebuilt. */
+  problem?: string;
+  facts: {
+    messages: number;
+    /** Size of every message as it was. */
+    tokens: number;
+    rounds: number;
+    activeFolds: number;
+    folds: number;
+    /** Tokens the active folds save. */
+    saved: number;
+    /** Messages the model reads as they were. */
+    shown: number;
+    /** Cache hits of the last request, 0–1. */
+    lastHitRate?: number;
+  };
+  /** The model's view in order: folds and stretches of messages as they were. */
+  segments: HerderContextSegment[];
+  /** Every fold ever made, oldest first. */
+  folds: HerderFoldView[];
+  /** The newest rounds, oldest first. */
+  rounds: HerderRoundView[];
+  /** The newest requests, oldest first. */
+  requests: HerderRequestView[];
+  /** Days with requests, oldest first. */
+  days: HerderUsageDay[];
+  total: HerderUsage;
+  /** The newest events, oldest first. */
+  events: HerderEventView[];
+}
+
+/** Returned instead of the view when nothing changed since `known`. */
+export interface HerderContextSame {
+  key: string;
+  unchanged: true;
 }
 
 /** 主管 › 行动记录: the Herder's turns and incidents, newest first. */
@@ -670,6 +856,88 @@ export interface WatchView {
   activeAt?: string;
 }
 
+/** One MCP server of a plugin, as the owner sees it before installing (ADR 0094). */
+export interface PluginServerView {
+  name: string;
+  kind: "stdio" | "http";
+  /** The command line it runs, or the address it talks to, as written by the plugin. */
+  run: string;
+}
+
+export interface PluginSkillView {
+  name: string;
+  description: string;
+}
+
+/** What a plugin would add, shown before the owner installs it. */
+export interface PluginPreview {
+  /** `official:<name>` or `github:owner/repo[/folder][@ref]`. */
+  source: string;
+  /** Where its files are on GitHub. */
+  link: string;
+  name: string;
+  description: string;
+  version?: string;
+  author?: string;
+  format: "claude" | "gemini";
+  servers: PluginServerView[];
+  /** Keys its servers read (`${GITHUB_TOKEN}`). */
+  keys: string[];
+  skills: PluginSkillView[];
+  /** Parts only Claude Code or Gemini CLI can use, in words: 「3 个斜杠命令」. */
+  ignored: string[];
+  /** Servers that cannot run here, in words. */
+  problems: string[];
+  /** Set when a plugin from this source is installed already. */
+  installedId?: string;
+}
+
+/**
+ * off: turned off; idle: on, its servers start when an agent first needs them; starting;
+ * ready: tools listed; failed: a server did not start or answer (see problem).
+ */
+export type PluginState = "off" | "idle" | "starting" | "ready" | "failed";
+
+/** An installed plugin. */
+export interface PluginView extends Omit<PluginPreview, "installedId"> {
+  id: string;
+  /** Task agents get its tools and skills. */
+  enabled: boolean;
+  /** The Herder also gets its read-only tools and its skills (off unless the owner turns it on). */
+  herder: boolean;
+  installedAt: string;
+  state: PluginState;
+  /** Tools its servers listed, and how many of them only read. */
+  tools: number;
+  readTools: number;
+  problem?: string;
+  /** Keys the owner filled in (the values stay in secrets.json). */
+  keysSet: string[];
+  /** The folder AgentHerd keeps it in. */
+  dir: string;
+}
+
+/** One plugin of the official Claude Code plugin library. */
+export interface PluginCatalogEntry {
+  name: string;
+  title: string;
+  description: string;
+  category?: string;
+  author?: string;
+  homepage?: string;
+  /** What to pass to previewPlugin; missing when AgentHerd cannot install it (see why). */
+  source?: string;
+  why?: string;
+  installed: boolean;
+}
+
+export interface PluginPatch {
+  enabled?: boolean;
+  herder?: boolean;
+  /** Keys to save; "" removes one. */
+  keys?: Record<string, string>;
+}
+
 export interface HostApi {
   status(): HostStatus;
   tasks(): TasksView;
@@ -677,6 +945,16 @@ export interface HostApi {
   transcript(taskId: string): TranscriptView;
   /** What the Herder did, newest turn first: at most `limit` turns (default 200). */
   herderActivity(limit?: number): HerderActivityView;
+  /**
+   * What the Herder's next request is made of, how its folds nest, its rounds, requests and token
+   * use, all from herd.db (ADR 0093, ADR 0095). With the `key` of the last answer: only whether
+   * it changed.
+   */
+  herderContext(known?: string): HerderContextView | HerderContextSame;
+  /** Messages `from`–`to` of the Herder's conversation, at most 200, each cut to 2,000 characters. */
+  herderMessages(from: number, to: number): HerderMessageView[];
+  /** The original messages of one fold, as text. */
+  herderContextFold(blockId: string): string;
   memories(): MemoryView;
   /** Changes an entry's text; the old text stays in its history. */
   editMemory(id: string, text: string): MemoryView;
@@ -785,6 +1063,15 @@ export interface HostApi {
   petPress(target: string, action: string): Promise<PetView>;
   /** The owner stopped a task (the pet's task card): its agent stops, the task stays (ADR 0072). */
   stopTask(taskId: string): Promise<void>;
+  /** The official Claude Code plugin library (ADR 0094). */
+  pluginCatalog(): Promise<PluginCatalogEntry[]>;
+  plugins(): PluginView[];
+  /** Downloads a plugin and says what it would add; nothing is installed yet. */
+  previewPlugin(source: string): Promise<PluginPreview>;
+  /** Installs a plugin the owner looked at, with the keys they filled in. */
+  installPlugin(source: string, keys: Record<string, string>): Promise<PluginView[]>;
+  setPlugin(id: string, patch: PluginPatch): Promise<PluginView[]>;
+  removePlugin(id: string): Promise<PluginView[]>;
 }
 
 export type HostMethod = keyof HostApi;
@@ -794,6 +1081,9 @@ export const HOST_METHODS: readonly HostMethod[] = [
   "tasks",
   "transcript",
   "herderActivity",
+  "herderContext",
+  "herderMessages",
+  "herderContextFold",
   "memories",
   "editMemory",
   "ownerProfile",
@@ -861,6 +1151,12 @@ export const HOST_METHODS: readonly HostMethod[] = [
   "petSay",
   "petPress",
   "stopTask",
+  "pluginCatalog",
+  "plugins",
+  "previewPlugin",
+  "installPlugin",
+  "setPlugin",
+  "removePlugin",
 ];
 
 export type HostEvent =
@@ -876,7 +1172,8 @@ export type HostEvent =
   | { topic: "westock"; data: WestockView }
   | { topic: "danjuan"; data: DanjuanView }
   | { topic: "login"; data: LoginView }
-  | { topic: "pet"; data: PetView };
+  | { topic: "pet"; data: PetView }
+  | { topic: "plugins"; data: PluginView[] };
 
 /** The same API, asynchronous, as seen by a client. */
 export type RemoteHost = {

@@ -1,11 +1,12 @@
-import { mkdtempSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Decision, Item, ReportView, Rule } from "@agentherd/protocol";
 import { describe, expect, it } from "vitest";
 import type { SessionRow } from "../src/index.ts";
-import { OWNER_CARDS_KEEP, Store } from "../src/index.ts";
+import { HERDER_PROMPTS_KEEP, OWNER_CARDS_KEEP, Store } from "../src/index.ts";
+import { HERDER_LOG_TABLE_SQL, HERDER_REQUESTS_V16_SQL } from "../src/store-schema.ts";
 
 const NOW = "2026-11-04T00:00:00.000Z";
 const REDACTED = "«redacted»";
@@ -449,7 +450,7 @@ describe("Store (herder_log)", () => {
     old.setState("herder.messages", [m("a"), m("b")]);
     old.close();
     const raw = new DatabaseSync(dbPath);
-    raw.exec("DROP TABLE herder_log");
+    dropHerderTables(raw);
     raw.exec("UPDATE schema_version SET version = 7");
     raw.close();
     const migrated = Store.open(dbPath);
@@ -538,5 +539,254 @@ describe("Store (owner_cards, ADR 0072)", () => {
     migrated.putOwnerCard("f:1", report("ok"));
     expect(migrated.ownerCards()).toHaveLength(1);
     migrated.close();
+  });
+});
+
+describe("Store (herder_requests, ADR 0093)", () => {
+  const parts = { system: 10, memory: 1, tools: 5, owner: 2, herder: 3, results: 4, folds: 0 };
+  const req = (at: string, input = 100) => ({
+    at,
+    model: "deepseek/deepseek-flash",
+    input,
+    output: 20,
+    cacheRead: 900,
+    cacheWrite: 0,
+    tokens: 25,
+    parts,
+  });
+
+  it("keeps each request's numbers and gives those since a time, oldest first", () => {
+    const store = Store.open(":memory:");
+    store.addHerderRequest(req("2026-11-20T10:00:00.000Z", 1));
+    store.addHerderRequest(req("2026-11-21T10:00:00.000Z", 2));
+    store.addHerderRequest(req("2026-11-21T11:00:00.000Z", 3));
+    const since = store.herderRequests("2026-11-21T00:00:00.000Z");
+    expect(since.map((r) => r.input)).toEqual([2, 3]);
+    expect(since[0]).toEqual({ ...req("2026-11-21T10:00:00.000Z", 2), cost: 0 });
+    expect(store.herderRequests("2026-11-01T00:00:00.000Z", 1).map((r) => r.input)).toEqual([3]);
+    store.close();
+  });
+
+  it("keeps where each request sits, what it cost and the prompt it went with (ADR 0095)", () => {
+    const store = Store.open(":memory:");
+    store.addHerderRequest({
+      ...req(NOW),
+      seq: 7,
+      round: 4,
+      cost: 0.002,
+      window: 128_000,
+      prompt: "abc",
+      failed: true,
+    });
+    const { parts: _, ...bare } = req(NOW);
+    store.addHerderRequest(bare);
+    expect(store.herderRequests(NOW)).toEqual([
+      { ...req(NOW), seq: 7, round: 4, cost: 0.002, window: 128_000, prompt: "abc", failed: true },
+      { ...bare, cost: 0 },
+    ]);
+    store.close();
+  });
+
+  it("adds the table to a version-15 database", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentherd-core-"));
+    const dbPath = join(dir, "herd.db");
+    Store.open(dbPath).close();
+    const raw = new DatabaseSync(dbPath);
+    dropHerderTables(raw);
+    raw.exec(HERDER_LOG_TABLE_SQL);
+    raw.exec("UPDATE schema_version SET version = 15");
+    raw.close();
+    const migrated = Store.open(dbPath);
+    migrated.addHerderRequest(req(NOW));
+    expect(migrated.herderRequests(NOW)).toHaveLength(1);
+    migrated.close();
+  });
+});
+
+/** Takes a new herd.db back to before schema 17: no herder_* tables but the turns. */
+function dropHerderTables(raw: DatabaseSync): void {
+  for (const t of [
+    "herder_messages",
+    "herder_rounds",
+    "herder_requests",
+    "herder_folds",
+    "herder_events",
+    "herder_prompts",
+  ]) {
+    raw.exec(`DROP TABLE IF EXISTS ${t}`);
+  }
+}
+
+describe("Store (the Herder's conversation in herd.db, ADR 0095)", () => {
+  const at = (minute: number) =>
+    Date.parse(`2026-11-21T10:${String(minute).padStart(2, "0")}:00.000Z`);
+  const owner = (text: string, minute: number) => ({
+    role: "user",
+    content: [
+      { type: "text", text: `[Now: 2026-11-21 18:${minute}, Friday]\n[Owner's message]\n${text}` },
+    ],
+    timestamp: at(minute),
+  });
+  const reply = (text: string, minute: number, usage = true) => ({
+    role: "assistant",
+    content: [{ type: "text", text }],
+    provider: "deepseek",
+    model: "deepseek-flash",
+    stopReason: "stop",
+    timestamp: at(minute),
+    ...(usage
+      ? { usage: { input: 100, output: 20, cacheRead: 900, cacheWrite: 0, cost: { total: 0.001 } } }
+      : {}),
+  });
+  const call = (minute: number) => ({
+    role: "assistant",
+    content: [{ type: "toolCall", id: "c1", name: "session_list", arguments: {} }],
+    provider: "deepseek",
+    model: "deepseek-flash",
+    stopReason: "toolUse",
+    timestamp: at(minute),
+    usage: { input: 50, output: 5, cacheRead: 800, cacheWrite: 10 },
+  });
+  const result = (minute: number) => ({
+    role: "toolResult",
+    toolCallId: "c1",
+    toolName: "session_list",
+    content: [{ type: "text", text: "没有任务" }],
+    timestamp: at(minute),
+  });
+  const task = (minute: number) => ({
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: '[Now: x]\n[Task result, not from the owner]\nTask e55ca076 "修登录 401" finished its turn.\nThe agent\'s reply:\n好了',
+      },
+    ],
+    timestamp: at(minute),
+  });
+
+  it("upgrades a version-16 database: messages with their kind and round, usage from the replies, a copy first", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentherd-core-"));
+    const dbPath = join(dir, "herd.db");
+    Store.open(dbPath).close();
+    const log = [
+      owner("现在什么情况？", 1),
+      call(2),
+      result(3),
+      reply("没有任务在跑", 4),
+      task(5),
+      reply("修好了", 6, false),
+    ];
+    const raw = new DatabaseSync(dbPath);
+    dropHerderTables(raw);
+    raw.exec(HERDER_LOG_TABLE_SQL);
+    raw.exec(HERDER_REQUESTS_V16_SQL);
+    raw.exec(
+      "INSERT INTO herder_requests(at, model, input, output, cache_read, cache_write, tokens, parts_json) VALUES ('x', 'm', 1, 1, 1, 1, 1, '{}')",
+    );
+    const insert = raw.prepare("INSERT INTO herder_log(seq, message_json) VALUES (?, ?)");
+    for (const [i, m] of log.entries()) insert.run(i, JSON.stringify(m));
+    raw.exec("UPDATE schema_version SET version = 16");
+    raw.close();
+
+    const store = Store.open(dbPath);
+    expect(store.herderLog()).toEqual(log);
+    expect(store.herder.messages().map((m) => [m.seq, m.kind, m.tool, m.round])).toEqual([
+      [0, "owner", undefined, 0],
+      [1, "call", "session_list", 0],
+      [2, "result", "session_list", 0],
+      [3, "reply", undefined, 0],
+      [4, "task", undefined, 4],
+      [5, "reply", undefined, 4],
+    ]);
+    expect(store.herder.messages()[0]?.at).toBe("2026-11-21T10:01:00.000Z");
+    expect(store.herder.rounds()).toEqual([
+      { seq: 0, at: "2026-11-21T10:01:00.000Z", kind: "owner", title: "现在什么情况？" },
+      {
+        seq: 4,
+        at: "2026-11-21T10:05:00.000Z",
+        kind: "task",
+        title: "「修登录 401」finished its turn",
+      },
+    ]);
+    // The old request rows go; every reply that carries usage becomes one.
+    const requests = store.herderRequests("2000-01-01");
+    expect(requests.map((r) => [r.seq, r.round, r.tokens, r.cost])).toEqual([
+      [1, 0, 860, 0],
+      [3, 0, 1000, 0.001],
+    ]);
+    expect(requests[0]?.parts).toBeUndefined();
+    const tables = new DatabaseSync(dbPath)
+      .prepare("SELECT name FROM sqlite_master WHERE name = 'herder_log'")
+      .all();
+    expect(tables).toEqual([]);
+    expect(readdirSync(dir).filter((f) => /^herd\.db\.v16-.*\.bak$/.test(f))).toHaveLength(1);
+    store.close();
+  });
+
+  it("starts a round at each prompt and rewrites rounds with the messages", () => {
+    const store = Store.open(":memory:");
+    store.writeHerderLog(0, [owner("甲", 1), reply("好", 2), owner("乙", 3), reply("行", 4)]);
+    store.writeHerderLog(3, [call(5), result(6), reply("查完了", 7)]);
+    expect(store.herder.messages().map((m) => m.round)).toEqual([0, 0, 2, 2, 2, 2]);
+    store.writeHerderLog(2, []);
+    expect(store.herder.rounds().map((r) => r.title)).toEqual(["甲"]);
+    // A message without a time takes the one before it.
+    store.writeHerderLog(2, [{ role: "user", content: "丙" }]);
+    expect(store.herder.messages()[2]?.at).toBe("2026-11-21T10:02:00.000Z");
+    store.close();
+  });
+
+  it("saves the bookkeeping and the folds together, and never deletes a fold", () => {
+    const store = Store.open(":memory:");
+    const fold = (id: string, state: "active" | "merged", parent?: string) => ({
+      blockId: id,
+      ...(parent === undefined ? {} : { parent }),
+      level: parent === undefined ? 2 : 1,
+      state,
+      by: "herder" as const,
+      topic: `话题 ${id}`,
+      summary: `摘要 ${id}`,
+      startSeq: 0,
+      endSeq: 9,
+      directStart: 0,
+      directEnd: 9,
+      messages: 10,
+      callSeq: 12,
+      tokensBefore: 5000,
+      tokensAfter: 300,
+      createdAt: NOW,
+      updatedAt: NOW,
+      block: { blockId: id },
+    });
+    store.saveHerderContext("herder.context", { refs: 1 }, [fold("b1", "active")]);
+    store.saveHerderContext("herder.context", { refs: 2 }, [
+      fold("b1", "merged", "b10"),
+      fold("b10", "active"),
+    ]);
+    store.saveHerderContext("herder.context", { refs: 3 }, []);
+    expect(store.getState("herder.context")).toEqual({ refs: 3 });
+    expect(store.herderFolds()).toEqual([fold("b1", "merged", "b10"), fold("b10", "active")]);
+    store.close();
+  });
+
+  it("keeps events, and each system prompt once", () => {
+    const store = Store.open(":memory:");
+    store.addHerderEvent("fold", { blockId: "b1" }, 4);
+    store.addHerderEvent("start", { messages: 3 });
+    expect(store.herderEvents("2000-01-01").map((e) => [e.kind, e.round, e.data])).toEqual([
+      ["fold", 4, { blockId: "b1" }],
+      ["start", undefined, { messages: 3 }],
+    ]);
+    const tools = [{ name: "session_list" }];
+    store.putHerderPrompt({ hash: "h1", system: "系统提示词", tools, tokens: 5 });
+    store.putHerderPrompt({ hash: "h1", system: "不会改", tools: [], tokens: 9 });
+    expect(store.herder.prompt("h1")).toMatchObject({ system: "系统提示词", tools, tokens: 5 });
+    expect(store.herder.prompt()?.hash).toBe("h1");
+    for (let i = 0; i < HERDER_PROMPTS_KEEP + 5; i++)
+      store.putHerderPrompt({ hash: `p${i}`, system: String(i), tools: [], tokens: 1 });
+    expect(store.herder.prompt()?.hash).toBe(`p${HERDER_PROMPTS_KEEP + 4}`);
+    expect(store.herder.prompt("h1")).toBeUndefined();
+    store.close();
   });
 });

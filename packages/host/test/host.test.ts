@@ -374,6 +374,32 @@ describe("Host", () => {
     expect(newest.total).toBe(2);
   });
 
+  it("builds the 上下文 tab from herd.db and answers 'unchanged' until something is written (ADR 0095)", async () => {
+    const t = makeHost(true);
+    expect(() => t.host.herderContext()).toThrow(/not running/);
+    await t.host.start();
+    const herd = (t.host as unknown as { herd: Herd }).herd;
+    herd.store.writeHerderLog(0, [
+      {
+        role: "user",
+        content: [{ type: "text", text: "[Owner's message]\n你好" }],
+        timestamp: Date.parse("2026-11-16T01:00:00Z"),
+      },
+    ]);
+    const first = t.host.herderContext();
+    if ("unchanged" in first) throw new Error("expected a view");
+    expect(first.facts).toMatchObject({ messages: 1, rounds: 1, activeFolds: 0 });
+    expect(first.segments).toEqual([
+      { kind: "raw", startSeq: 0, endSeq: 0, messages: 1, tokens: first.facts.tokens },
+    ]);
+    expect(t.host.herderContext(first.key)).toEqual({ key: first.key, unchanged: true });
+    expect(t.host.herderMessages(0, 5).map((m) => m.text)).toEqual(["[Owner's message]\n你好"]);
+    herd.store.addHerderEvent("start", { messages: 1 });
+    const next = t.host.herderContext(first.key);
+    expect("unchanged" in next).toBe(false);
+    expect(() => t.host.herderContextFold("b1")).toThrow("no fold b1");
+  });
+
   it("keeps Codex out of new tasks after it fails to start one", async () => {
     const t = makeHost(true, ["pi", "codex"]);
     await t.host.start();

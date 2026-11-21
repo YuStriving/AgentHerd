@@ -101,6 +101,19 @@ export interface HerderSuggestion {
   show(text: string): void;
 }
 
+/**
+ * Plugins the owner let the Herder use (ADR 0094): their read-only tools and their skills.
+ * `list` is what is known now (it changes when a plugin is turned on or off).
+ */
+export interface HerderPlugins {
+  list(): {
+    tools: { name: string; description: string }[];
+    skills: { name: string; description: string }[];
+  };
+  call(name: string, args: unknown): Promise<unknown>;
+  skill(name: string): string;
+}
+
 export interface HerderHost {
   readonly locale: Locale;
   readonly texts: CoreTexts;
@@ -192,6 +205,8 @@ export interface HerderHost {
    * now, and where to put it. Absent → none.
    */
   suggestion?: HerderSuggestion;
+  /** Plugins the owner let the Herder use (ADR 0094); absent → none. */
+  plugins?: HerderPlugins;
   audit(type: string, data: Record<string, unknown>): void;
   /** Keeps a line of the Herder's conversation with the owner (`herder_turns`). */
   recordTurn(role: HerderTurnRole, text: string, taskId?: string): void;
@@ -207,6 +222,139 @@ export interface HerderHost {
   herderLog(): unknown[];
   /** Replaces the saved conversation from position `from` on with `messages`. */
   writeHerderLog(from: number, messages: unknown[]): void;
+  /** Keeps one request's token counts for the 上下文 tab (ADR 0093); absent → not kept. */
+  recordRequest?(request: HerderRequestRecord): void;
+  /** The folds as last saved, in the order they were made (ADR 0095); absent → none kept. */
+  herderFolds?(): HerderFoldRecord[];
+  /**
+   * Saves the engine's bookkeeping under `key` and the folds that changed, in one go (ADR 0095);
+   * absent → the whole state goes to `setState`.
+   */
+  saveHerderContext?(key: string, state: unknown, folds: HerderFoldRecord[]): void;
+  /** Keeps a system prompt and tool list once, by hash (ADR 0095). */
+  recordPrompt?(prompt: HerderPromptRecord): void;
+  /** Keeps something that happened to the conversation: a fold, a repair, a start (ADR 0095). */
+  herderEvent?(kind: string, data: Record<string, unknown>, round?: number): void;
+}
+
+/** What the Herder's requests are made of, as the 主管 page's 上下文 tab shows it (ADR 0093). */
+export const HERDER_CONTEXT_PARTS = [
+  "system",
+  "memory",
+  "tools",
+  "owner",
+  "herder",
+  "results",
+  "folds",
+] as const;
+export type HerderContextPart = (typeof HERDER_CONTEXT_PARTS)[number];
+export type HerderContextParts = Record<HerderContextPart, number>;
+
+/** One piece of a request: a message, a tool's schema, the system prompt. */
+export interface HerderContextItem {
+  part: HerderContextPart;
+  label: string;
+  tokens: number;
+  /** Its text, cut to {@link HERDER_CONTEXT_ITEM_TEXT_MAX} characters. */
+  text: string;
+  /** Characters cut off the end of `text`. */
+  more: number;
+}
+export const HERDER_CONTEXT_ITEM_TEXT_MAX = 1500;
+
+/** The Herder's last request, measured before it went out (estimated tokens). */
+export interface HerderContextSnapshot {
+  at: string;
+  tokens: number;
+  /** The working window (the model's, at most 128K) and where a forced fold starts. */
+  window: number;
+  foldAt: number;
+  parts: HerderContextParts;
+  items: HerderContextItem[];
+}
+
+/**
+ * One request to the Herder's model: what the provider counted, and what we sent (ADR 0093). The
+ * only place usage is kept (ADR 0095); requests from before were filled in from the saved replies.
+ */
+export interface HerderRequestRecord {
+  at: string;
+  model: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** What the provider said it cost, in dollars; 0 when it did not say. */
+  cost?: number;
+  /** Size of the prompt: input, cache read and cache write as counted, else our estimate. */
+  tokens: number;
+  /** The working window the Herder had then (the model's, at most 128K). */
+  window?: number;
+  /** Our estimate of the parts; absent for requests kept from before ADR 0095. */
+  parts?: HerderContextParts;
+  /** Where the reply it made sits in the conversation; absent when the try was taken back. */
+  seq?: number;
+  /** The round it belongs to: position of the message that started the round. */
+  round?: number;
+  /** Hash of the system prompt and tools it went with (`herder_prompts`). */
+  prompt?: string;
+  /** The provider answered with an error. */
+  failed?: boolean;
+}
+
+/** A system prompt with its tools, kept once per change (`herder_prompts`, ADR 0095). */
+export interface HerderPromptRecord {
+  hash: string;
+  /** The system message's text, the resident memory at its end. */
+  system: string;
+  /** The tool definitions it declared. */
+  tools: unknown[];
+  tokens: number;
+}
+
+/** How a fold came about (ADR 0095). */
+export type HerderFoldBy = "herder" | "forced" | "overflow";
+/** active: in what the model sees; merged: inside a bigger fold; opened: unfolded. */
+export type HerderFoldState = "active" | "merged" | "opened";
+
+/**
+ * A fold as kept in `herder_folds` (ADR 0095): never deleted, so the 上下文 tab can show every
+ * fold and how they nest. Positions are `seq`s of the conversation.
+ */
+export interface HerderFoldRecord {
+  blockId: string;
+  /** The fold that took this one in; absent at the top. */
+  parent?: string;
+  /** 1 for a fold of messages, one more for each fold of folds. */
+  level: number;
+  state: HerderFoldState;
+  by: HerderFoldBy;
+  topic?: string;
+  summary: string;
+  /** First and last message it covers, folds inside included. */
+  startSeq: number;
+  endSeq: number;
+  /** The messages it folded itself, without the folds it took in. */
+  directStart?: number;
+  directEnd?: number;
+  messages: number;
+  /** Where the Herder's compress call is: its summary is read there. Absent for AgentHerd's folds. */
+  callSeq?: number;
+  tokensBefore: number;
+  tokensAfter: number;
+  createdAt: string;
+  updatedAt: string;
+  /** The engine's own record, read back on start. */
+  block: unknown;
+}
+
+/** Something that happened to the Herder's conversation (`herder_events`, ADR 0095). */
+export interface HerderEventRecord {
+  id: number;
+  at: string;
+  kind: string;
+  round?: number;
+  data: Record<string, unknown>;
 }
 
 /** Card action target of the 「重试」 button on a held Herder message. */

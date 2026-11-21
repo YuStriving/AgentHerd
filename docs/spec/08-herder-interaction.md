@@ -192,8 +192,8 @@ on the 「模型」 page (「主管用的模型」, with 试一下). When the He
 the trail says why, with a button to the 「模型」 page.
 
 The trail shows what the Herder did, newest turn first, grouped by day. It is read from what is
-already saved, nothing extra is written: the turns come from `herder_log` (the whole conversation,
-ADR 0045), and errors, retries, model switches, guard hits and folds from the `herder.*` rows of
+already saved, nothing extra is written: the turns come from `herder_messages` (the whole conversation,
+ADR 0045, ADR 0095), and errors, retries, model switches, guard hits and folds from the `herder.*` rows of
 `audit` (not `herder.turn`, `herder.tool` and `herder.answer`, which the turns already show).
 
 - A turn is one line: the time, what started it (你说 / 你选了 / 任务结果 / 定时任务 / 新活 /
@@ -205,7 +205,7 @@ ADR 0045), and errors, retries, model switches, guard hits and folds from the `h
 - The page asks the host again every 5 seconds while open. The host returns the newest 200 turns
   (local API `herderActivity(limit?)`) and the audit rows since the oldest of them.
 
-A turn that failed is rolled back out of `herder_log` (ADR 0037), so it shows only as its error row.
+A turn that failed is rolled back out of `herder_messages` (ADR 0037), so it shows only as its error row.
 
 ## Order of work
 

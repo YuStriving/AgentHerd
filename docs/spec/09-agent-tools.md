@@ -251,6 +251,21 @@ Holdings from `danjuanfunds.com` are enriched with recent N trading days of publ
 (`djapi/fund/nav/history`) to compute compounded per-fund returns and static estimated daily P&L. No
 trade/subscription/redemption endpoints exist.
 
+## 3f. Plugins (ADR 0094)
+
+**Install.** 应用连接 → 插件: 「插件库」 lists the official Claude Code library
+(`anthropics/claude-plugins-official`), 「从链接装」 takes a GitHub link. `previewPlugin` downloads the
+folder into `plugins/.staging/` and shows the servers' commands or addresses, skills, needed keys
+and the parts AgentHerd does not use; `installPlugin(source, keys)` keeps it in `plugins/<id>` and
+`config.json` (`plugins`), keys as `plugin:<id>:<KEY>` secrets.
+
+**Tasks.** Tools of every plugin that is on appear in the gateway as `<ID>__<tool>` (toolkit
+`plugin:<id>`). `readOnlyHint` tools run directly; all others ask the owner first, like app writes.
+New tasks get a note listing each skill with its `SKILL.md` path.
+
+**Herder.** Only for plugins with 「主管也能用」 on (off by default): the read-only tools through
+`plugin_call` and the skills through `plugin_skill`, listed under Connected accounts.
+
 ## 4. Failure behavior
 
 | Case | Behavior |

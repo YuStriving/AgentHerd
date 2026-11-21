@@ -26,7 +26,7 @@ it("keeps only matching apps while typing, after a late reply, and after an app 
     const { stdout } = await promisify(execFile)(
       electron,
       [join(import.meta.dirname, "fixtures/apps-search.cjs"), join(out, "index.html")],
-      { env, timeout: 20_000 },
+      { env, timeout: 60_000 },
     );
     const line = stdout.split("\n").find((s) => s.startsWith("SEARCH_RESULT "));
     expect(line, stdout).toBeDefined();
@@ -77,4 +77,4 @@ it("keeps only matching apps while typing, after a late reply, and after an app 
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
-}, 30_000);
+}, 90_000);

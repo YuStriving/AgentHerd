@@ -1,11 +1,18 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { StatementSync } from "node:sqlite";
 import { DatabaseSync } from "node:sqlite";
 import type { Decision, Item, MessageRef, Rule, View } from "@agentherd/protocol";
 import { redact } from "@agentherd/rules";
 import { headTail } from "./cut-text.ts";
-import type { HerderTurnRole } from "./herder-port.ts";
+import type {
+  HerderEventRecord,
+  HerderFoldRecord,
+  HerderPromptRecord,
+  HerderRequestRecord,
+  HerderTurnRole,
+} from "./herder-port.ts";
+import { HERDER_REQUESTS_READ_MAX, HerderStore } from "./herder-store.ts";
 import { ftsQuery, MEMORY_TABLES_SQL, MemoryStore } from "./memory-store.ts";
 import type { Schedule } from "./schedules.ts";
 import {
@@ -21,6 +28,8 @@ import {
 } from "./store-rows.ts";
 import {
   HERDER_LOG_TABLE_SQL,
+  HERDER_REQUESTS_V16_SQL,
+  HERDER_TABLES_SQL,
   HERDER_TURNS_TABLE_SQL,
   INTAKE_WATCHES_TABLE_SQL,
   LATEST_SCHEMA_VERSION,
@@ -68,6 +77,8 @@ export class Store {
   private readonly secrets: Record<string, string> | undefined;
   /** The Herder's long-term memory (ADR 0038). */
   readonly memory: MemoryStore;
+  /** The Herder's conversation and context (ADR 0095). */
+  readonly herder: HerderStore;
 
   private readonly stmtUpsertSession: StatementSync;
   private readonly stmtGetSession: StatementSync;
@@ -92,90 +103,25 @@ export class Store {
     }
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA busy_timeout = 5000");
-    this.secrets = options?.secrets;
-
-    this.db.exec("CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL)");
-    const versionRow = this.db.prepare("SELECT version FROM schema_version LIMIT 1").get();
-    if (versionRow === undefined) {
-      this.db.exec(SCHEMA_SQL);
-      this.db.prepare("INSERT INTO schema_version(version) VALUES (?)").run(LATEST_SCHEMA_VERSION);
-    } else {
-      const version = versionRow.version as number;
-      if (version < 1 || version > LATEST_SCHEMA_VERSION) {
-        this.db.close();
-        throw new Error(`unsupported herd.db schema version ${version}`);
-      }
-      if (version < 2) {
-        this.db.exec(STATE_TABLE_SQL);
-        this.db.prepare("UPDATE schema_version SET version = ?").run(2);
-      }
-      if (version < 3) {
-        this.db.exec(TRANSCRIPT_TABLE_SQL);
-        this.db.prepare("UPDATE schema_version SET version = ?").run(3);
-      }
-      if (version < 4) {
-        this.db.exec(HERDER_TURNS_TABLE_SQL);
-        this.db.prepare("UPDATE schema_version SET version = ?").run(4);
-      }
-      if (version < 5) {
-        this.db.exec(MEMORY_TABLES_SQL);
-        this.db.prepare("UPDATE schema_version SET version = ?").run(5);
-      }
-      if (version < 6) {
-        this.db.exec(TASKS_TABLE_SQL);
-        this.db.prepare("UPDATE schema_version SET version = ?").run(6);
-      }
-      if (version < 7) {
-        const columns = this.db.prepare("PRAGMA table_info(tasks)").all();
-        if (!columns.some((c) => c.name === "workspace_json")) this.db.exec(TASK_WORKSPACE_SQL);
-        this.db.exec(MESSAGE_TASKS_TABLE_SQL);
-        this.db.prepare("UPDATE schema_version SET version = ?").run(7);
-      }
-      if (version < 8) {
-        this.transaction(() => {
-          this.db.exec(HERDER_LOG_TABLE_SQL);
-          this.moveLegacyHerderMessages();
-          this.db.prepare("UPDATE schema_version SET version = ?").run(8);
-        });
-      }
-      if (version < 9) {
-        this.db.exec(OUTBOX_TABLE_SQL);
-        this.db.prepare("UPDATE schema_version SET version = ?").run(9);
-      }
-      if (version < 10) {
-        this.db.exec(PR_WATCHES_TABLE_SQL);
-        this.db.prepare("UPDATE schema_version SET version = ?").run(10);
-      }
-      if (version < 11) {
-        this.db.exec(MAIL_WATCHES_TABLE_SQL);
-        this.db.prepare("UPDATE schema_version SET version = ?").run(11);
-      }
-      if (version < 12) {
-        this.db.exec(INTAKE_WATCHES_TABLE_SQL);
-        this.db.prepare("UPDATE schema_version SET version = ?").run(12);
-      }
-      if (version < 13) {
-        this.db.exec(SCHEDULES_TABLE_SQL);
-        this.db.prepare("UPDATE schema_version SET version = ?").run(13);
-      }
-      if (version < 14) {
-        const columns = this.db.prepare("PRAGMA table_info(tasks)").all();
-        if (!columns.some((c) => c.name === "allowed_steps_json")) {
-          this.db.exec(TASK_ALLOWED_STEPS_SQL);
-        }
-        this.db.prepare("UPDATE schema_version SET version = ?").run(14);
-      }
-      if (version < 15) {
-        this.db.exec(OWNER_CARDS_TABLE_SQL);
-        this.db.prepare("UPDATE schema_version SET version = ?").run(15);
-      }
-    }
-
     if (path !== ":memory:") {
+      // WAL before anything is written, and the schema below in one transaction: every table
+      // committed on its own was a separate disk flush, seconds on a slow disk (Windows CI).
       this.db.exec("PRAGMA journal_mode = WAL");
     }
-    this.memory = new MemoryStore(this.db, this.secrets);
+    this.secrets = options?.secrets;
+    if (path !== ":memory:") this.backUpBeforeUpgrade(path);
 
+    this.db.exec("BEGIN");
+    try {
+      this.migrate();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      this.db.close();
+      throw error;
+    }
+    this.memory = new MemoryStore(this.db, this.secrets);
+    this.herder = new HerderStore(this.db);
     this.stmtUpsertSession = this.db.prepare(
       "INSERT OR REPLACE INTO sessions(id, profile_id, cwd, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
     );
@@ -477,6 +423,41 @@ export class Store {
     }));
   }
 
+  /** Keeps one request to the Herder's model (ADR 0093, 0095); all are kept. */
+  addHerderRequest(r: HerderRequestRecord): void {
+    this.herder.addRequest(r);
+  }
+
+  /** Requests since `since` (an ISO time), oldest first, at most `limit` of the newest. */
+  herderRequests(since: string, limit = HERDER_REQUESTS_READ_MAX): HerderRequestRecord[] {
+    return this.herder.requests(since, limit);
+  }
+
+  /** Every fold of the Herder's conversation ever kept, in the order they were made (ADR 0095). */
+  herderFolds(): HerderFoldRecord[] {
+    return this.herder.folds();
+  }
+
+  /** Saves the context engine's bookkeeping under `key` and the folds that changed, together. */
+  saveHerderContext(key: string, state: unknown, folds: readonly HerderFoldRecord[]): void {
+    this.transaction(() => {
+      this.setState(key, state);
+      this.herder.putFolds(folds);
+    });
+  }
+
+  addHerderEvent(kind: string, data: Record<string, unknown>, round?: number): void {
+    this.herder.addEvent(kind, data, round);
+  }
+
+  herderEvents(since: string, limit?: number): HerderEventRecord[] {
+    return this.herder.events(since, limit);
+  }
+
+  putHerderPrompt(prompt: HerderPromptRecord): void {
+    this.herder.putPrompt(prompt);
+  }
+
   /** The last `limit` lines of the Herder's conversation, oldest first. */
   herderTurns(limit = 100): HerderTurn[] {
     const rows = this.db
@@ -694,12 +675,9 @@ export class Store {
     this.stmtDeleteState.run(key);
   }
 
-  /** The Herder's whole conversation, oldest first (ADR 0045). */
+  /** The Herder's whole conversation, oldest first (ADR 0045, 0095). */
   herderLog(): unknown[] {
-    return this.db
-      .prepare("SELECT message_json FROM herder_log ORDER BY seq")
-      .all()
-      .map((row) => JSON.parse(row.message_json as string) as unknown);
+    return this.herder.log();
   }
 
   /**
@@ -707,11 +685,27 @@ export class Store {
    * turn that was rolled back or rewritten replaces what was saved of it.
    */
   writeHerderLog(from: number, messages: unknown[]): void {
-    this.transaction(() => {
-      this.db.prepare("DELETE FROM herder_log WHERE seq >= ?").run(from);
-      const insert = this.db.prepare("INSERT INTO herder_log(seq, message_json) VALUES (?, ?)");
-      for (const [i, message] of messages.entries()) insert.run(from + i, JSON.stringify(message));
-    });
+    this.transaction(() => this.herder.writeLog(from, messages));
+  }
+
+  /**
+   * Copies herd.db before its schema is brought up to date (ADR 0095): an upgrade can rewrite
+   * whole tables, and the copy is the way back.
+   */
+  private backUpBeforeUpgrade(path: string): void {
+    if (!existsSync(path)) return;
+    let version: number;
+    try {
+      const row = this.db.prepare("SELECT version FROM schema_version LIMIT 1").get();
+      if (row === undefined) return;
+      version = Number(row.version);
+    } catch {
+      return; // A new database: nothing to keep.
+    }
+    if (version >= LATEST_SCHEMA_VERSION) return;
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+    const copy = `${path}.v${version}-${stamp}.bak`;
+    if (!existsSync(copy)) this.db.prepare("VACUUM INTO ?").run(copy);
   }
 
   /** Before schema version 8 the Herder kept the tail of its conversation in `state`. */
@@ -726,6 +720,91 @@ export class Store {
       for (const [i, message] of messages.entries()) insert.run(i, JSON.stringify(message));
     }
     this.db.prepare("DELETE FROM state WHERE key = ?").run(LEGACY_HERDER_STATE_KEY);
+  }
+
+  /** Creates the schema or brings an older one up to date; runs inside one transaction. */
+  private migrate(): void {
+    this.db.exec("CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL)");
+    const versionRow = this.db.prepare("SELECT version FROM schema_version LIMIT 1").get();
+    if (versionRow === undefined) {
+      this.db.exec(SCHEMA_SQL);
+      this.db.prepare("INSERT INTO schema_version(version) VALUES (?)").run(LATEST_SCHEMA_VERSION);
+    } else {
+      const version = versionRow.version as number;
+      if (version < 1 || version > LATEST_SCHEMA_VERSION) {
+        throw new Error(`unsupported herd.db schema version ${version}`);
+      }
+      if (version < 2) {
+        this.db.exec(STATE_TABLE_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(2);
+      }
+      if (version < 3) {
+        this.db.exec(TRANSCRIPT_TABLE_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(3);
+      }
+      if (version < 4) {
+        this.db.exec(HERDER_TURNS_TABLE_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(4);
+      }
+      if (version < 5) {
+        this.db.exec(MEMORY_TABLES_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(5);
+      }
+      if (version < 6) {
+        this.db.exec(TASKS_TABLE_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(6);
+      }
+      if (version < 7) {
+        const columns = this.db.prepare("PRAGMA table_info(tasks)").all();
+        if (!columns.some((c) => c.name === "workspace_json")) this.db.exec(TASK_WORKSPACE_SQL);
+        this.db.exec(MESSAGE_TASKS_TABLE_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(7);
+      }
+      if (version < 8) {
+        this.db.exec(HERDER_LOG_TABLE_SQL);
+        this.moveLegacyHerderMessages();
+        this.db.prepare("UPDATE schema_version SET version = ?").run(8);
+      }
+      if (version < 9) {
+        this.db.exec(OUTBOX_TABLE_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(9);
+      }
+      if (version < 10) {
+        this.db.exec(PR_WATCHES_TABLE_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(10);
+      }
+      if (version < 11) {
+        this.db.exec(MAIL_WATCHES_TABLE_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(11);
+      }
+      if (version < 12) {
+        this.db.exec(INTAKE_WATCHES_TABLE_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(12);
+      }
+      if (version < 13) {
+        this.db.exec(SCHEDULES_TABLE_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(13);
+      }
+      if (version < 14) {
+        const columns = this.db.prepare("PRAGMA table_info(tasks)").all();
+        if (!columns.some((c) => c.name === "allowed_steps_json")) {
+          this.db.exec(TASK_ALLOWED_STEPS_SQL);
+        }
+        this.db.prepare("UPDATE schema_version SET version = ?").run(14);
+      }
+      if (version < 15) {
+        this.db.exec(OWNER_CARDS_TABLE_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(15);
+      }
+      if (version < 16) {
+        this.db.exec(HERDER_REQUESTS_V16_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(16);
+      }
+      if (version < 17) {
+        new HerderStore(this.db).migrate(HERDER_TABLES_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(17);
+      }
+    }
   }
 
   private transaction(run: () => void): void {

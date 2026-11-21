@@ -35,20 +35,52 @@ export type {
   RunResult,
 } from "./herd.ts";
 export { Herd } from "./herd.ts";
+export {
+  countTokens,
+  type HerderMessageFacts,
+  type HerderMessageKind,
+  type HerderRoundKind,
+  herderMessageFacts,
+  roundOf,
+} from "./herder-log.ts";
 export type {
   FeedItem,
   FeedQuery,
   FeedSource,
+  HerderContextItem,
+  HerderContextPart,
+  HerderContextParts,
+  HerderContextSnapshot,
   HerderEvent,
+  HerderEventRecord,
   HerderFactory,
+  HerderFoldBy,
+  HerderFoldRecord,
+  HerderFoldState,
   HerderHost,
+  HerderPlugins,
   HerderPort,
+  HerderPromptRecord,
+  HerderRequestRecord,
   HerderSuggestion,
   HerderTurnRole,
   OwnerImage,
   VoiceRequest,
 } from "./herder-port.ts";
-export { FEED_SOURCES, HERDER_RETRY_TARGET } from "./herder-port.ts";
+export {
+  FEED_SOURCES,
+  HERDER_CONTEXT_ITEM_TEXT_MAX,
+  HERDER_CONTEXT_PARTS,
+  HERDER_RETRY_TARGET,
+} from "./herder-port.ts";
+export {
+  HERDER_PROMPTS_KEEP,
+  HERDER_REQUESTS_READ_MAX,
+  type HerderMessageRow,
+  type HerderRoundRow,
+  HerderStore,
+  type HerderUsageRow,
+} from "./herder-store.ts";
 export type { Answerable, InboxOptions, OwnerAnswer } from "./inbox.ts";
 export { BODY_MAX_LINES, DEFAULT_REMIND_MINUTES, Inbox, itemBody, itemView } from "./inbox.ts";
 export type { IntakeItem, IntakeKind, IntakeOptions, IntakeRequest } from "./intake.ts";

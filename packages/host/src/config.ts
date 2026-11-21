@@ -8,6 +8,18 @@ import type { ModelSettings, SecretStore } from "@agentherd/core";
 import type { ModelTiers } from "@agentherd/herder";
 import type { AgentProfile, ChannelBinding, Locale, Mode } from "@agentherd/protocol";
 
+/** One installed plugin (ADR 0094). */
+export interface PluginEntry {
+  id: string;
+  source: string;
+  name: string;
+  enabled: boolean;
+  herder: boolean;
+  installedAt: string;
+  /** Where its files came from, for the 看源码 link. */
+  link?: string;
+}
+
 export interface CliConfig {
   channel?: ChannelBinding;
   mode?: Mode;
@@ -21,6 +33,8 @@ export interface CliConfig {
   keepAwake?: boolean;
   /** Where the owner dragged models to (ADR 0028); models not here are placed by name. */
   modelTiers?: Partial<ModelTiers>;
+  /** Installed plugins (ADR 0094); files in ~/.agentherd/plugins/<id>, keys in secrets.json. */
+  plugins?: PluginEntry[];
   /** Connected apps (docs/spec/09-agent-tools.md §3). The Composio key is in secrets.json. */
   apps?: { composioUserId?: string };
   /** 小红书 and 知乎 (ADR 0058). Sign-ins are in ~/.agentherd/<platform>/, not here. */

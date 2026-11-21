@@ -2,11 +2,13 @@
 // longer needs into summaries it writes itself. The engine is our fork of billion-context's
 // acp-kernel (packages/context-kernel); this file adapts it to the Herder's pi messages.
 
+import { createHash } from "node:crypto";
 import {
   blockDocs,
   buildCompressSystemPrompt,
   buildStatusReport,
   COMPRESS_TOOL_OPENAI,
+  type CompressionBlock,
   type CompressionState,
   type Config,
   type CoreMessage,
@@ -27,11 +29,30 @@ import {
   resolvePrompts,
   searchBlocks,
 } from "@agentherd/context-kernel";
+import {
+  HERDER_CONTEXT_ITEM_TEXT_MAX,
+  HERDER_CONTEXT_PARTS,
+  type HerderContextItem,
+  type HerderContextPart,
+  type HerderContextParts,
+  type HerderContextSnapshot,
+  type HerderFoldBy,
+  type HerderFoldRecord,
+  type HerderPromptRecord,
+} from "@agentherd/core";
 import type { AgentMessage, AgentTool, AgentToolResult } from "@agentherd/herder-loop";
 import { bool, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { OWNER_LABEL } from "./prompt.ts";
 
-/** Where the folds and refs are saved; the messages themselves are in `herder_log`. */
+/** Where the memory starts in the system prompt (`memorySnapshot`). */
+/** The first resident memory block (`[记忆 · <kind> — … 用量 N/cap 字]`), not a mention of one in the rules. */
+const MEMORY_START = /^\[记忆 · [^\]\n]* — [^\]\n]*用量 /m;
+const FOLD_START = "[Compressed conversation section]";
+
+/**
+ * Where the engine's bookkeeping (refs, counters, nudges) is saved. The messages are in
+ * `herder_messages` and the folds in `herder_folds` (ADR 0095).
+ */
 export const CONTEXT_STATE_KEY = "herder.context";
 /**
  * The window the Herder works in: the model's, but at most this, and this when the model does not
@@ -69,6 +90,8 @@ export interface ContextHooks {
   /** The agent's messages now, the leading system message included. */
   messages(): readonly AgentMessage[];
   audit(type: string, data: Record<string, unknown>): void;
+  /** Something that happened to the conversation, for `herder_events` (ADR 0095). */
+  event?(kind: string, data: Record<string, unknown>): void;
 }
 
 /**
@@ -333,6 +356,214 @@ export function forcedSummary(log: readonly AgentMessage[], from: number, to: nu
   ].join("\n");
 }
 
+function cutText(text: string): { text: string; more: number } {
+  return text.length > HERDER_CONTEXT_ITEM_TEXT_MAX
+    ? {
+        text: text.slice(0, HERDER_CONTEXT_ITEM_TEXT_MAX),
+        more: text.length - HERDER_CONTEXT_ITEM_TEXT_MAX,
+      }
+    : { text, more: 0 };
+}
+
+function firstLine(text: string, max = 60): string {
+  const line = text.replace(LEADING_TAG, "").trim().split("\n")[0] ?? "";
+  return line.length > max ? `${line.slice(0, max)}…` : line;
+}
+
+/** The first range line of a compress call, e.g. 「m00001–m00243 早期杂务」. */
+function foldTopic(content: unknown): string {
+  for (const c of content as { type: string; name?: string; arguments?: { content?: unknown } }[]) {
+    if (c.type === "toolCall" && c.name === "compress" && typeof c.arguments?.content === "string")
+      return firstLine(c.arguments.content);
+  }
+  return "";
+}
+
+/**
+ * What a request is made of, by part (ADR 0093): the system prompt with the memory split off, the
+ * tool schemas, the owner's messages, the Herder's replies and calls, tool results, and the folded
+ * summaries with AgentHerd's notes. Tokens are estimates, counted as the kernel counts them.
+ */
+export function measureContext(
+  messages: readonly AgentMessage[],
+  window: number,
+  at = new Date(),
+): HerderContextSnapshot {
+  const parts = Object.fromEntries(HERDER_CONTEXT_PARTS.map((p) => [p, 0])) as HerderContextParts;
+  const items: HerderContextItem[] = [];
+  const add = (part: HerderContextPart, label: string, text: string, tokens?: number) => {
+    const n = tokens ?? defaultCountTokens(text) + MESSAGE_OVERHEAD;
+    if (text === "" && n === 0) return;
+    parts[part] += n;
+    items.push({ part, label, tokens: n, ...cutText(text) });
+  };
+  for (const m of messages) {
+    if (m.role === "system") {
+      const text = typeof m.content === "string" ? m.content : textOf(m.content as Content);
+      const at = text.search(MEMORY_START);
+      if (at < 0) add("system", "系统提示词", text);
+      else {
+        add("system", "系统提示词", text.slice(0, at).trimEnd());
+        add("memory", "记忆", text.slice(at));
+      }
+      const tools = (m as { toolsAdded?: { name: string }[] }).toolsAdded ?? [];
+      for (const t of tools) add("tools", t.name, JSON.stringify(t, null, 2));
+    } else if (m.role === "user") {
+      const text = textOf(m.content as Content);
+      const bare = text.replace(LEADING_TAG, "");
+      if (bare.startsWith(FOLD_START))
+        add("folds", firstLine(bare.slice(FOLD_START.length)) || "折叠摘要", bare);
+      else if (m.timestamp === 0) add("folds", firstLine(bare) || "提示", bare);
+      else add("owner", firstLine(bare) || "（图片）", bare);
+    } else if (m.role === "assistant") {
+      const texts: string[] = [];
+      const calls: string[] = [];
+      for (const c of m.content as {
+        type: string;
+        text?: string;
+        thinking?: string;
+        name?: string;
+        arguments?: unknown;
+      }[]) {
+        if (c.type === "text") texts.push(c.text ?? "");
+        else if (c.type === "thinking") texts.push(c.thinking ?? "");
+        else if (c.type === "toolCall") {
+          calls.push(c.name ?? "");
+          texts.push(`${c.name}(${JSON.stringify(c.arguments ?? {})})`);
+        }
+      }
+      // A compress call carries the summary the model reads in its place: it counts as a fold.
+      const folding = calls.length > 0 && calls.every((n) => n === "compress");
+      const said = firstLine(
+        texts.find((t) => t.trim() !== "" && !calls.some((n) => t.startsWith(`${n}(`))) ?? "",
+      );
+      if (folding) add("folds", foldTopic(m.content) || "折叠摘要", texts.join("\n\n"));
+      else {
+        const label = calls.length > 0 ? `调用 ${calls.join("、")}` : said || "回复";
+        add("herder", label, texts.join("\n\n"));
+      }
+    } else if (m.role === "toolResult") {
+      const r = m as { toolName?: string; content: Content };
+      const text = textOf(r.content).replace(LEADING_TAG, "");
+      if (r.toolName === "compress") add("folds", "折叠回执", text);
+      else add("results", r.toolName ?? "工具结果", text);
+    }
+  }
+  const tokens = Object.values(parts).reduce((a, b) => a + b, 0);
+  return {
+    at: at.toISOString(),
+    tokens,
+    window,
+    foldAt: Math.round(window * FORCED_FOLD_AT),
+    parts,
+    items,
+  };
+}
+
+/** The system prompt and tools a request went with, once per change (`herder_prompts`, ADR 0095). */
+export function promptOf(view: readonly AgentMessage[]): HerderPromptRecord | undefined {
+  const head = view.slice(0, leadingSystem(view));
+  if (head.length === 0) return undefined;
+  const system = head
+    .map((m) => (typeof m.content === "string" ? m.content : textOf(m.content as Content)))
+    .join("\n\n");
+  const tools = head.flatMap((m) => (m as { toolsAdded?: unknown[] }).toolsAdded ?? []);
+  const toolText = tools.map((t) => JSON.stringify(t, null, 2)).join("\n\n");
+  const hash = createHash("sha256")
+    .update(system)
+    .update("\u0000")
+    .update(toolText)
+    .digest("hex")
+    .slice(0, 16);
+  return { hash, system, tools, tokens: defaultCountTokens(`${system}\n\n${toolText}`) };
+}
+
+/** The system message a kept prompt stands for, to measure or project a request from herd.db. */
+export function promptMessage(prompt: Pick<HerderPromptRecord, "system" | "tools">): AgentMessage {
+  return {
+    role: "system",
+    content: prompt.system,
+    timestamp: 0,
+    toolsAdded: prompt.tools,
+  } as AgentMessage;
+}
+
+/** First and last position in the log of these engine ids (the opening line is not in the log). */
+function seqRange(ids: readonly string[]): { start: number; end: number; count: number } {
+  const seqs = new Set(ids.map(indexOf).filter((n) => Number.isFinite(n)));
+  if (seqs.size === 0) return { start: 0, end: -1, count: 0 };
+  return { start: Math.min(...seqs), end: Math.max(...seqs), count: seqs.size };
+}
+
+/** Where each compress call sits in the log, by its call id. */
+function callSeqs(log: readonly AgentMessage[]): Map<string, number> {
+  const out = new Map<string, number>();
+  log.forEach((m, i) => {
+    if (m.role !== "assistant") return;
+    for (const c of m.content) if (c.type === "toolCall") out.set(c.id, i);
+  });
+  return out;
+}
+
+/**
+ * The engine's blocks as `herder_folds` rows (ADR 0095): which fold took which in, how deep each
+ * is, whether it is in what the model sees, who made it and where its summary is read.
+ */
+export function foldRecords(
+  state: CompressionState,
+  log: readonly AgentMessage[],
+  by: ReadonlyMap<string, HerderFoldBy>,
+  now = new Date(),
+): HerderFoldRecord[] {
+  const blocks = state.blocks;
+  const parentOf = new Map<string, string>();
+  for (const b of blocks) for (const child of b.directBlockIds) parentOf.set(child, b.blockId);
+  const byId = new Map(blocks.map((b) => [b.blockId, b]));
+  const levels = new Map<string, number>();
+  const levelOf = (id: string, seen = new Set<string>()): number => {
+    const known = levels.get(id);
+    if (known !== undefined) return known;
+    const b = byId.get(id);
+    if (b === undefined || seen.has(id)) return 1;
+    seen.add(id);
+    const level = 1 + Math.max(0, ...b.directBlockIds.map((c) => levelOf(c, seen)));
+    levels.set(id, level);
+    return level;
+  };
+  const calls = callSeqs(log);
+  return blocks.map((b) => {
+    const all = seqRange(b.effectiveMessageIds);
+    const direct = seqRange(b.directMessageIds);
+    const parent = parentOf.get(b.blockId);
+    const callSeq = b.compressCallId === undefined ? undefined : calls.get(b.compressCallId);
+    return {
+      blockId: b.blockId,
+      ...(parent === undefined ? {} : { parent }),
+      level: levelOf(b.blockId),
+      state: b.active ? "active" : parent !== undefined ? "merged" : "opened",
+      by: callSeq !== undefined ? "herder" : (by.get(b.blockId) ?? "forced"),
+      ...(b.topic === undefined ? {} : { topic: b.topic }),
+      summary: b.summary,
+      startSeq: all.start,
+      endSeq: all.end,
+      ...(direct.count === 0 ? {} : { directStart: direct.start, directEnd: direct.end }),
+      messages: all.count,
+      ...(callSeq === undefined ? {} : { callSeq }),
+      tokensBefore: b.compressedTokens,
+      tokensAfter: defaultCountTokens(b.summary) + MESSAGE_OVERHEAD,
+      createdAt: new Date(b.createdAt).toISOString(),
+      updatedAt: now.toISOString(),
+      block: b,
+    } satisfies HerderFoldRecord;
+  });
+}
+
+/** A fold row without its save time, to see whether it changed. */
+function foldKey(f: HerderFoldRecord): string {
+  const { updatedAt: _, ...rest } = f;
+  return JSON.stringify(rest);
+}
+
 export class HerderContext {
   private readonly core = createCore();
   private readonly prompts: Prompts = resolvePrompts(undefined, { languagePreservation: true });
@@ -340,11 +571,37 @@ export class HerderContext {
   state: CompressionState;
   /** Tokens of the last request, for the status report. */
   private lastTokens = 0;
+  /** What the last request was made of (ADR 0093). */
+  snapshot: HerderContextSnapshot | undefined;
 
-  constructor(hooks: ContextHooks, log: readonly AgentMessage[], saved?: CompressionState) {
+  /** Who made the folds AgentHerd made (the Herder's own have a compress call). */
+  private readonly foldBy = new Map<string, HerderFoldBy>();
+  /** The fold rows as last saved, to write only those that changed. */
+  private readonly savedFolds = new Map<string, string>();
+  /** Set while folding because the provider said the request was too long. */
+  private folding: HerderFoldBy | undefined;
+  /** Folds that cut into another were straightened on start (ADR 0095). */
+  readonly repaired: string[] = [];
+
+  /**
+   * @param saved The engine's bookkeeping; before ADR 0095 it held the folds too.
+   * @param folds The folds from `herder_folds`; when there are any, they are the folds.
+   */
+  constructor(
+    hooks: ContextHooks,
+    log: readonly AgentMessage[],
+    saved?: CompressionState,
+    folds: readonly HerderFoldRecord[] = [],
+  ) {
     this.hooks = hooks;
     this.state = saved ?? createInitialState();
-    if (saved === undefined && log.length > 0) {
+    if (folds.length > 0) {
+      this.state = { ...this.state, blocks: folds.map((f) => f.block as CompressionBlock) };
+      for (const f of folds) {
+        this.foldBy.set(f.blockId, f.by);
+        this.savedFolds.set(f.blockId, foldKey(f));
+      }
+    } else if (saved === undefined && log.length > 0) {
       // The folds are lost but the compress calls are in the log: replay them.
       try {
         this.state = rebuildCompressionState(this.state, toCore(log), this.config()).state;
@@ -354,6 +611,116 @@ export class HerderContext {
           message: (error as Error).message,
         });
       }
+    }
+    try {
+      this.repaired = this.straighten(log);
+    } catch (error) {
+      hooks.audit("herder.context.error", { during: "repair", message: (error as Error).message });
+    }
+  }
+
+  /**
+   * Folds must nest (ADR 0095): a fold covers whole folds or none of one. A fold made before the
+   * check that cuts into an older one keeps only what it folded itself, as long as what the model
+   * sees stays exactly the same. @returns the folds that were straightened.
+   */
+  private straighten(log: readonly AgentMessage[]): string[] {
+    const active = this.state.blocks.filter((b) => b.active);
+    const fixed = new Map<string, string[]>();
+    for (const x of active) {
+      let ids = x.effectiveMessageIds;
+      for (const y of active) {
+        if (y === x || y.createdAt > x.createdAt) continue;
+        const inY = new Set(y.effectiveMessageIds);
+        const shared = ids.filter((id) => inY.has(id)).length;
+        // Inside y, or y whole inside x (then y would not be active): not a cut.
+        if (shared === 0 || shared === ids.length || shared === inY.size) continue;
+        ids = ids.filter((id) => !inY.has(id));
+      }
+      if (ids !== x.effectiveMessageIds && ids.length > 0) fixed.set(x.blockId, ids);
+    }
+    if (fixed.size === 0) return [];
+    const blocks = this.state.blocks.map((b) => {
+      const ids = fixed.get(b.blockId);
+      return ids === undefined ? b : { ...b, effectiveMessageIds: ids };
+    });
+    const next = { ...this.state, blocks };
+    const core = toCore(log);
+    const before = JSON.stringify(prune(core, this.state));
+    if (JSON.stringify(prune(core, next)) !== before) {
+      this.hooks.audit("herder.context.repair-skipped", { blocks: [...fixed.keys()] });
+      return [];
+    }
+    this.state = next;
+    const repaired = [...fixed.keys()];
+    for (const id of repaired) {
+      const r = seqRange(fixed.get(id) ?? []);
+      this.hooks.audit("herder.context.repaired", { block: id, from: r.start, to: r.end });
+      this.hooks.event?.("fold.repaired", { blockId: id, startSeq: r.start, endSeq: r.end });
+    }
+    return repaired;
+  }
+
+  /** The engine's bookkeeping without the folds, which go to `herder_folds`. */
+  bookkeeping(): CompressionState {
+    return { ...this.state, blocks: [] };
+  }
+
+  /** Fold rows that are new or changed since the last call; the first call returns all of them. */
+  changedFolds(log: readonly AgentMessage[], now = new Date()): HerderFoldRecord[] {
+    const out: HerderFoldRecord[] = [];
+    for (const f of foldRecords(this.state, log, this.foldBy, now)) {
+      const key = foldKey(f);
+      if (this.savedFolds.get(f.blockId) === key) continue;
+      this.savedFolds.set(f.blockId, key);
+      out.push(f);
+    }
+    return out;
+  }
+
+  /** Every fold as a `herder_folds` row. */
+  folds(log: readonly AgentMessage[]): HerderFoldRecord[] {
+    return foldRecords(this.state, log, this.foldBy);
+  }
+
+  /**
+   * A compress range must take in whole folds or none (ADR 0095). @returns why `startRef–endRef`
+   * cuts into an active fold, or undefined when it does not.
+   */
+  cutsIntoFold(startRef: string, endRef: string): string | undefined {
+    const { byRef, byRaw } = this.state.messageRefs;
+    const rawStart = byRef[startRef];
+    const rawEnd = byRef[endRef];
+    if (rawStart === undefined || rawEnd === undefined) return undefined;
+    const a = rawStart === "opening" ? -1 : indexOf(rawStart);
+    const b = indexOf(rawEnd);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return undefined;
+    const refOf = (seq: number) => byRaw[idOf(seq, 0)] ?? `#${seq}`;
+    for (const block of this.state.blocks) {
+      if (!block.active) continue;
+      const { start: s, end: e, count } = seqRange(block.effectiveMessageIds);
+      if (count === 0 || b < s || a > e) continue;
+      if ((a <= s && b >= e) || (s <= a && b <= e)) continue;
+      return `${startRef}–${endRef} cuts into ${block.blockId} (${refOf(s)}–${refOf(e)}). A fold takes in whole folds or none of one: start at ${refOf(s)} or earlier to take ${block.blockId} in, or keep the range outside ${refOf(s)}–${refOf(e)}.`;
+    }
+    return undefined;
+  }
+
+  /** Records who made the folds that appeared since `before`, and tells the event log. */
+  private noteNewFolds(before: ReadonlySet<string>, by: HerderFoldBy): void {
+    for (const b of this.state.blocks) {
+      if (before.has(b.blockId)) continue;
+      if (by !== "herder") this.foldBy.set(b.blockId, by);
+      const r = seqRange(b.effectiveMessageIds);
+      this.hooks.event?.("fold", {
+        blockId: b.blockId,
+        by,
+        startSeq: r.start,
+        endSeq: r.end,
+        messages: r.count,
+        tokens: b.compressedTokens,
+        took: b.directBlockIds,
+      });
     }
   }
 
@@ -379,15 +746,22 @@ export class HerderContext {
    * answers.
    */
   project(messages: readonly AgentMessage[]): AgentMessage[] {
+    let out: AgentMessage[];
     try {
-      return this.view(messages);
+      out = this.view(messages);
     } catch (error) {
       this.hooks.audit("herder.context.error", {
         during: "project",
         message: (error as Error).message,
       });
-      return this.tail(messages);
+      out = this.tail(messages);
     }
+    try {
+      this.snapshot = measureContext(out, this.config().modelContextLimit);
+    } catch {
+      // Measuring is for the 上下文 tab only.
+    }
+    return out;
   }
 
   private tail(messages: readonly AgentMessage[]): AgentMessage[] {
@@ -502,6 +876,7 @@ export class HerderContext {
       folded += tokens;
     }
     if (ranges.length === 0) return false;
+    const before = new Set(this.state.blocks.map((b) => b.blockId));
     const result = this.core.applyCompression({
       ranges,
       messages: [...core],
@@ -516,6 +891,7 @@ export class HerderContext {
     });
     if (result.result.blocksCreated === 0) return false;
     this.state = result.state;
+    this.noteNewFolds(before, this.folding ?? "forced");
     return true;
   }
 
@@ -534,6 +910,7 @@ export class HerderContext {
         defaultCountTokens(JSON.stringify(messages.slice(0, lead))) +
         estimate(prune(core, this.state));
       const excess = Math.max(tokens - config.modelContextLimit * 0.5, tokens / 2);
+      this.folding = "overflow";
       return this.fold(core, log, config, excess);
     } catch (error) {
       this.hooks.audit("herder.context.error", {
@@ -541,6 +918,8 @@ export class HerderContext {
         message: (error as Error).message,
       });
       return false;
+    } finally {
+      this.folding = undefined;
     }
   }
 
@@ -574,8 +953,24 @@ export class HerderContext {
             "no ranges found: content must hold blocks that each start with a 'mNNNNN–mNNNNN topic' line",
           );
         }
+        // Folds nest (ADR 0095): a range that cuts into a fold is refused before the engine sees it.
+        const cuts: string[] = [];
+        const ranges = parsed.ranges.filter((r) => {
+          const cut = this.cutsIntoFold(r.startRef, r.endRef);
+          if (cut !== undefined) cuts.push(cut);
+          return cut === undefined;
+        });
+        if (ranges.length === 0) {
+          this.hooks.audit("herder.context.compress", {
+            ranges: parsed.ranges.map((x) => `${x.startRef}–${x.endRef}`),
+            blocks: 0,
+            errors: cuts,
+          });
+          throw new Error(cuts.join("\n"));
+        }
+        const before = new Set(this.state.blocks.map((b) => b.blockId));
         const result = this.core.applyCompression({
-          ranges: parsed.ranges.map((r) => ({ ...r, compressCallId: callId })),
+          ranges: ranges.map((r) => ({ ...r, compressCallId: callId })),
           messages: toCore(this.log()),
           state: this.state,
           config: this.config(),
@@ -585,9 +980,12 @@ export class HerderContext {
           ranges: parsed.ranges.map((x) => `${x.startRef}–${x.endRef}`),
           blocks: r.blocksCreated,
           tokens: r.tokensCompressed,
-          errors: r.errors,
+          errors: [...cuts, ...r.errors],
         });
-        const notes = [...r.warnings, ...(r.notes ?? [])].map((n) => `Note: ${n}`);
+        const notes = [
+          ...cuts.map((c) => `Not compressed: ${c}`),
+          ...[...r.warnings, ...(r.notes ?? [])].map((n) => `Note: ${n}`),
+        ];
         if (r.blocksCreated === 0) {
           // Already folded or among the newest messages: a receipt, so the model does not retry.
           if (r.noop === true) {
@@ -601,6 +999,7 @@ export class HerderContext {
           throw new Error([...r.errors, ...notes].join("; ") || "nothing was compressed");
         }
         this.state = result.state;
+        this.noteNewFolds(before, "herder");
         const lines = [
           `Compressed ${r.blocksCreated} block(s), about ${r.tokensCompressed} tokens folded.`,
           ...r.errors.map((e) => `Not compressed: ${e}`),

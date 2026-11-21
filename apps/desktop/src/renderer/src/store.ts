@@ -12,6 +12,7 @@ import type {
   LarkView,
   LoginView,
   ModelsView,
+  PluginView,
   ProviderView,
   RemoteHost,
   SetupState,
@@ -75,6 +76,8 @@ interface AppState {
   westock: WestockView | undefined;
   /** 应用连接 › 雪球基金; kept by "danjuan" events. */
   danjuan: DanjuanView | undefined;
+  /** 应用连接 › 插件 (ADR 0094); kept by "plugins" events. */
+  plugins: PluginView[] | undefined;
   providers: ProviderView[];
   setup: SetupState | undefined;
   page: Page;
@@ -135,6 +138,7 @@ export const useApp = create<AppState>()((set, get) => ({
   feeds: undefined,
   westock: undefined,
   danjuan: undefined,
+  plugins: undefined,
   providers: [],
   setup: undefined,
   page: hashPage() ?? "tasks",
@@ -236,6 +240,9 @@ function applyEvent(event: HostEvent): void {
       break;
     case "danjuan":
       useApp.setState({ danjuan: event.data });
+      break;
+    case "plugins":
+      useApp.setState({ plugins: event.data });
       break;
     case "login":
       useApp.setState({ login: event.data });

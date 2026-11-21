@@ -1,10 +1,11 @@
 // The Herder's context over the forked kernel (ADR 0045): refs, folds the model writes, the forced
 // fold, overflow, restarts and the fallback when the engine fails.
 
-import type { CompressionState } from "@agentherd/context-kernel";
+import { type CompressionState, defaultCountTokens } from "@agentherd/context-kernel";
+import { countTokens, type HerderFoldRecord } from "@agentherd/core";
 import type { AgentMessage } from "@agentherd/herder-loop";
 import { describe, expect, it } from "vitest";
-import { HerderContext, withoutContextMarks } from "../src/context.ts";
+import { HerderContext, promptOf, withoutContextMarks } from "../src/context.ts";
 
 const usage = {
   input: 0,
@@ -66,19 +67,25 @@ function textOf(m: { content?: unknown } | undefined): string {
     .join("\n");
 }
 
-function setup(log: AgentMessage[], opts: { window?: number; saved?: CompressionState } = {}) {
+function setup(
+  log: AgentMessage[],
+  opts: { window?: number; saved?: CompressionState; folds?: HerderFoldRecord[] } = {},
+) {
   const audits: { type: string; data: Record<string, unknown> }[] = [];
+  const events: { kind: string; data: Record<string, unknown> }[] = [];
   const box = { messages: [SYSTEM, ...log] };
   const context = new HerderContext(
     {
       contextWindow: () => opts.window ?? 128_000,
       messages: () => box.messages,
       audit: (type, data) => void audits.push({ type, data }),
+      event: (kind, data) => void events.push({ kind, data }),
     },
     log,
     opts.saved,
+    opts.folds,
   );
-  return { context, box, audits, project: () => context.project(box.messages) };
+  return { context, box, audits, events, project: () => context.project(box.messages) };
 }
 
 const tool = (context: HerderContext, name: string) => {
@@ -260,5 +267,106 @@ describe("HerderContext", () => {
       owner("好"),
     ]).project();
     expect(textOf(out[3])).toBe("在的");
+  });
+});
+
+describe("folds as rows of their own (ADR 0095)", () => {
+  it("counts tokens the way the engine does", () => {
+    for (const text of [
+      "",
+      "hello world",
+      "主人让我整理三月的发票",
+      "mixed 中文 and English，标点。",
+    ])
+      expect(countTokens(text)).toBe(defaultCountTokens(text));
+  });
+
+  it("keeps each fold as a row: who made it, what it covers, where its call is", async () => {
+    const s = await folded();
+    const log = s.box.messages.slice(1);
+    const rows = s.context.changedFolds(log, new Date("2026-11-21T10:00:00Z"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      blockId: "b1",
+      level: 1,
+      state: "active",
+      by: "herder",
+      summary: SUMMARY,
+      startSeq: 0,
+      endSeq: 1,
+      messages: 2,
+      callSeq: 5,
+      updatedAt: "2026-11-21T10:00:00.000Z",
+    });
+    expect(rows[0]?.tokensAfter).toBeLessThan(rows[0]?.tokensBefore ?? 0);
+    // Saved once; nothing changed since.
+    expect(s.context.changedFolds(log)).toEqual([]);
+    expect(s.context.bookkeeping().blocks).toEqual([]);
+    expect(s.events.map((e) => [e.kind, e.data.blockId, e.data.by])).toEqual([
+      ["fold", "b1", "herder"],
+    ]);
+
+    // A restart from the bookkeeping and the rows alone shows the same.
+    const after = setup(log, { saved: s.context.bookkeeping(), folds: rows });
+    // Nothing to write back on start; each turn the engine ages its blocks, so rows change then.
+    expect(after.context.changedFolds(log)).toEqual([]);
+    expect(JSON.stringify(after.project())).toBe(JSON.stringify(s.project()));
+  });
+
+  it("refuses a range that cuts into a fold and says how to take it in or leave it", async () => {
+    const s = await folded();
+    s.box.messages.push(owner(`第三件 ${"丙".repeat(6000)}`), reply("好了"));
+    s.project();
+    const args = { content: `m00003–m00006 发票和第二件\n${SUMMARY}` };
+    s.box.messages.push(call("k2", "compress", args));
+    await expect(tool(s.context, "compress").execute("k2", args)).rejects.toThrow(
+      "m00003–m00006 cuts into b1 (m00002–m00003). A fold takes in whole folds or none of one: start at m00002 or earlier",
+    );
+    expect(s.context.cutsIntoFold("m00002", "m00006")).toBeUndefined();
+    expect(s.context.cutsIntoFold("m00004", "m00006")).toBeUndefined();
+  });
+
+  it("a fold made before the check that cut into an older one keeps only its own part, the view unchanged", async () => {
+    const s = await folded();
+    s.box.messages.push(owner(`第三件 ${"丙".repeat(6000)}`), reply("第三件好了"), owner("好"));
+    s.project();
+    const log = s.box.messages.slice(1);
+    // Write the cut the old code allowed: b2 claims b1's last message as well.
+    const b1 = s.context.state.blocks[0];
+    if (b1 === undefined) throw new Error("no b1");
+    const own = ["h7", "h8"];
+    const b2 = {
+      ...b1,
+      blockId: "b2",
+      runId: 2,
+      topic: "第三件",
+      summary: "第三件事办完了，没有要跟进的事，也没有提到项目目录、模型或者别的要记住的东西。",
+      directMessageIds: own,
+      effectiveMessageIds: ["h1", ...own],
+      compressCallId: undefined,
+      createdAt: b1.createdAt + 1000,
+    };
+    const cut = { ...s.context.state, blocks: [b1, b2] } as CompressionState;
+    const old = setup(log);
+    (old.context as unknown as { state: CompressionState }).state = structuredClone(cut);
+    const fixed = setup(log, { saved: structuredClone(cut) });
+    expect(fixed.context.repaired).toEqual(["b2"]);
+    expect(fixed.context.state.blocks[1]?.effectiveMessageIds).toEqual(own);
+    expect(JSON.stringify(fixed.project())).toBe(JSON.stringify(old.project()));
+    expect(fixed.audits.map((a) => a.type)).toContain("herder.context.repaired");
+    expect(fixed.events.map((e) => e.kind)).toEqual(["fold.repaired"]);
+  });
+
+  it("keeps the system prompt and tools under one hash", () => {
+    const view = [
+      { ...SYSTEM, toolsAdded: [{ name: "session_list" }] } as AgentMessage,
+      owner("hi"),
+    ];
+    const a = promptOf(view);
+    expect(a?.system).toBe("rules");
+    expect(a?.tools).toEqual([{ name: "session_list" }]);
+    expect(a?.hash).toMatch(/^[0-9a-f]{16}$/);
+    expect(promptOf([{ ...SYSTEM, content: "other" } as AgentMessage])?.hash).not.toBe(a?.hash);
+    expect(promptOf([owner("no system")])).toBeUndefined();
   });
 });

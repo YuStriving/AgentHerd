@@ -25,6 +25,8 @@ export {
   FORCED_FOLD_AT,
   FORCED_FOLD_TO,
   HerderContext,
+  measureContext,
+  promptMessage,
   withoutContextMarks,
 } from "./context.ts";
 export {
@@ -122,6 +124,12 @@ export {
   type TestResult,
   testModel,
 } from "./models.ts";
+export {
+  PLUGIN_REPLY_MAX,
+  PLUGIN_TOOL_NAMES,
+  pluginReplyText,
+  pluginTools,
+} from "./plugin-tools.ts";
 export {
   ANSWER_TEXT_MAX,
   CONTEXT_LABEL,

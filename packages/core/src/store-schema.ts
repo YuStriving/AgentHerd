@@ -142,7 +142,103 @@ export const OWNER_CARDS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS owner_cards(
 );
 CREATE INDEX IF NOT EXISTS owner_cards_at ON owner_cards(at);`;
 
-export const LATEST_SCHEMA_VERSION = 15;
+/** Schema 16: one row per request to the Herder's model (ADR 0093); replaced in schema 17. */
+export const HERDER_REQUESTS_V16_SQL = `CREATE TABLE IF NOT EXISTS herder_requests(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  model TEXT NOT NULL,
+  input INTEGER NOT NULL,
+  output INTEGER NOT NULL,
+  cache_read INTEGER NOT NULL,
+  cache_write INTEGER NOT NULL,
+  tokens INTEGER NOT NULL,
+  parts_json TEXT NOT NULL
+);`;
+
+/**
+ * Schema 17: the Herder's conversation and context, all in herd.db (ADR 0095).
+ * - herder_messages: every message, oldest first, with what it is next to it (replaces herder_log).
+ * - herder_rounds: one row per round (the message that started it: the owner, a task's result, …).
+ * - herder_requests: every request to the model with what the provider counted; the only usage.
+ * - herder_folds: every fold ever made, kept after it is taken into a bigger one.
+ * - herder_events: what happened to the conversation (folds, repairs, starts).
+ * - herder_prompts: each system prompt and tool list once, by hash.
+ */
+export const HERDER_TABLES_SQL = `CREATE TABLE IF NOT EXISTS herder_messages(
+  seq INTEGER PRIMARY KEY,
+  at TEXT NOT NULL,
+  role TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  tool TEXT,
+  round INTEGER NOT NULL,
+  tokens INTEGER NOT NULL,
+  chars INTEGER NOT NULL,
+  message_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS herder_messages_round ON herder_messages(round);
+CREATE TABLE IF NOT EXISTS herder_rounds(
+  seq INTEGER PRIMARY KEY,
+  at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS herder_requests(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  seq INTEGER,
+  round INTEGER,
+  model TEXT NOT NULL,
+  input INTEGER NOT NULL,
+  output INTEGER NOT NULL,
+  cache_read INTEGER NOT NULL,
+  cache_write INTEGER NOT NULL,
+  cost REAL NOT NULL DEFAULT 0,
+  tokens INTEGER NOT NULL,
+  window INTEGER,
+  parts_json TEXT,
+  prompt TEXT,
+  failed INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS herder_requests_at ON herder_requests(at);
+CREATE INDEX IF NOT EXISTS herder_requests_round ON herder_requests(round);
+CREATE TABLE IF NOT EXISTS herder_folds(
+  block_id TEXT PRIMARY KEY,
+  num INTEGER NOT NULL,
+  parent TEXT,
+  level INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  made_by TEXT NOT NULL,
+  topic TEXT,
+  summary TEXT NOT NULL,
+  start_seq INTEGER NOT NULL,
+  end_seq INTEGER NOT NULL,
+  direct_start INTEGER,
+  direct_end INTEGER,
+  messages INTEGER NOT NULL,
+  call_seq INTEGER,
+  tokens_before INTEGER NOT NULL,
+  tokens_after INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  block_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS herder_events(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  round INTEGER,
+  data_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS herder_events_at ON herder_events(at);
+CREATE TABLE IF NOT EXISTS herder_prompts(
+  hash TEXT PRIMARY KEY,
+  at TEXT NOT NULL,
+  tokens INTEGER NOT NULL,
+  system TEXT NOT NULL,
+  tools_json TEXT NOT NULL
+);`;
+
+export const LATEST_SCHEMA_VERSION = 17;
 
 export const SCHEMA_SQL = `
 CREATE TABLE sessions(
@@ -201,7 +297,6 @@ ${MEMORY_TABLES_SQL}
 ${TASKS_TABLE_SQL}
 ${TASK_WORKSPACE_SQL}
 ${MESSAGE_TASKS_TABLE_SQL}
-${HERDER_LOG_TABLE_SQL}
 ${OUTBOX_TABLE_SQL}
 ${PR_WATCHES_TABLE_SQL}
 ${MAIL_WATCHES_TABLE_SQL}
@@ -209,4 +304,5 @@ ${INTAKE_WATCHES_TABLE_SQL}
 ${SCHEDULES_TABLE_SQL}
 ${TASK_ALLOWED_STEPS_SQL}
 ${OWNER_CARDS_TABLE_SQL}
+${HERDER_TABLES_SQL}
 `;

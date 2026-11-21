@@ -139,8 +139,9 @@ later task gets and which counts as the owner allowing that step.
   dropped ([ADR 0062](../adr/0062-restarts-lose-nothing-and-wake-ups-stop-at-three.md)).
 - The session holds the conversation with the owner and short notes. Task state is read from
   `herd.db` with the read tools; after a fold the Herder must re-read it.
-- The whole conversation is kept in `herd.db` (`herder_log`) and reloaded after a restart; nothing
-  is cut. Before each request it goes through billion-context's kernel (`packages/context-kernel`):
+- The whole conversation is kept in `herd.db` (`herder_messages`, each message with its kind, round
+  and size, [ADR 0095](../adr/0095-the-herders-conversation-in-tables-and-folds-that-nest.md))
+  and reloaded after a restart; nothing is cut. Before each request it goes through billion-context's kernel (`packages/context-kernel`):
   each message gets a ref (the owner's messages and tool results only; the Herder's own replies go
   without one, and a line it writes that begins like a ref tag never reaches the owner,
   [ADR 0073](../adr/0073-the-pets-conversation-looks-like-a-chat.md)), and parts the Herder folded
@@ -149,7 +150,14 @@ later task gets and which counts as the owner allowing that step.
   back. The window is the model's, at most 128,000 tokens. At 90 % of it AgentHerd folds the oldest
   whole turns itself (never the current one); a "context too long" error folds about half and
   retries once
-  ([ADR 0045](../adr/0045-herder-context-folded-by-the-model.md)).
+  ([ADR 0045](../adr/0045-herder-context-folded-by-the-model.md)). Each fold is a row of
+  `herder_folds` (who made it, what it covers, its parent once a bigger fold takes it in), and
+  folds nest: a `compress` range that cuts into a fold is refused with how to take the fold in or
+  leave it out (ADR 0095).
+- The 主管 page's 上下文 tab shows the last request split into system prompt, memory, tools, folds,
+  the owner, the Herder and tool results against the window, each request's token use and cache
+  hits (`herder_requests`), a trend, every item, and the folds with their originals
+  ([ADR 0093](../adr/0093-the-herders-context-panel.md)).
 - No single input fills it: the owner's message goes in up to 8,000 characters (the whole is saved
   under `attachments` and the message says where), a task's reply up to 12,000, a report, event or
   new-work item up to 4,000; each cut says how much was left out. Files dropped on the pet come as

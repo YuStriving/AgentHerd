@@ -5,6 +5,7 @@ import { HOST_METHODS } from "@agentherd/host/api";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { Bridge, PetRoom } from "../shared/bridge.ts";
 import type { PetArm, ShortcutState } from "../shared/pet-shortcuts.ts";
+import type { Theme } from "../shared/theme.ts";
 
 const host = Object.fromEntries(
   HOST_METHODS.map((method: HostMethod) => [
@@ -68,6 +69,10 @@ const bridge: Bridge = {
       return () => ipcRenderer.removeListener("app:shortcuts", handler);
     },
     pause: (paused) => ipcRenderer.send("app:pause-shortcuts", paused),
+  },
+  theme: {
+    get: () => ipcRenderer.invoke("app:theme") as Promise<Theme>,
+    set: (theme) => ipcRenderer.invoke("app:set-theme", theme) as Promise<void>,
   },
   onOpenTask(listener) {
     const handler = (_e: unknown, taskId: string) => listener(taskId);

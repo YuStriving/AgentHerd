@@ -21,6 +21,7 @@ import type {
   FeedQuery,
   FeedSource,
   HerderFactory,
+  HerderPlugins,
   HerderPort,
   HerderSuggestion,
   OwnerImage,
@@ -130,6 +131,8 @@ export interface HerdOptions {
   herderTurnAdded?: () => void;
   /** Where the Herder's guess at the owner's next message goes (the desktop pet, ADR 0084). */
   suggestion?: HerderSuggestion;
+  /** Plugins the owner let the Herder use (ADR 0094). */
+  plugins?: HerderPlugins;
   /** A watched source failing this long is told to the owner (default 30, ADR 0050). */
   sourceDownMinutes?: number;
   /**

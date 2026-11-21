@@ -2,7 +2,7 @@
 // (docs/spec/02-architecture.md §2). The host runs in a utility process, or is already running
 // (`agentherd start`); main talks to it only over the local API socket.
 
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -18,6 +18,7 @@ import { connectHost, type HostClient, socketPath } from "@agentherd/host/server
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme, powerSaveBlocker, shell } from "electron";
 import type { Notice, NoticeTab } from "../shared/pet-notify.ts";
 import { ApproveKey, type PetArm, shortcutLabel } from "../shared/pet-shortcuts.ts";
+import { isTheme, type Theme, themeFrom, themeText } from "../shared/theme.ts";
 import { ensureHost, ownsHost, stopOwnedHost } from "./host-process.ts";
 import { MenuBar } from "./menu-bar.ts";
 import { Notifier } from "./notifier.ts";
@@ -162,6 +163,31 @@ ipcMain.handle("host:call", async (_event, method: HostMethod, params: unknown[]
   return fn(...(Array.isArray(params) ? params : []));
 });
 ipcMain.handle("host:connected", () => connected);
+
+// 设置 → 外观 → 颜色: nativeTheme.themeSource makes `prefers-color-scheme` in every window and the
+// window frame follow the owner's choice; it is kept next to the pet's position in userData.
+function themeFile(): string {
+  return join(app.getPath("userData"), "theme.json");
+}
+
+function savedTheme(): Theme {
+  try {
+    return themeFrom(readFileSync(themeFile(), "utf8"));
+  } catch {
+    return themeFrom(undefined);
+  }
+}
+
+ipcMain.handle("app:theme", () => nativeTheme.themeSource);
+ipcMain.handle("app:set-theme", (_e, theme: unknown) => {
+  if (!isTheme(theme)) throw new Error("theme must be system, light or dark");
+  nativeTheme.themeSource = theme;
+  try {
+    writeFileSync(themeFile(), themeText(theme));
+  } catch (error) {
+    console.error(`[desktop] could not keep the colours: ${(error as Error).message}`);
+  }
+});
 
 function frameColor(): string {
   return nativeTheme.shouldUseDarkColors ? "#0d0d0d" : "#e8e8eb";
@@ -377,6 +403,7 @@ app.whenReady().then(() => {
   if (process.platform !== "darwin") Menu.setApplicationMenu(null);
   // In development the bundle is node_modules' Electron.app; show the AgentHerd icon anyway.
   app.dock?.setIcon(APP_ICON);
+  nativeTheme.themeSource = savedTheme();
   pet = new PetWindow({
     preload: join(import.meta.dirname, "../preload/index.cjs"),
     rendererDir: join(import.meta.dirname, "../renderer"),

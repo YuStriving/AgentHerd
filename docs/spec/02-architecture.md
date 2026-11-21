@@ -110,7 +110,8 @@ Rules:
   `testModel`, `probeModels` (GET `/models` of an OpenAI- or Anthropic-compatible service, so
   the owner ticks models instead of typing ids), `setupFeishu`, `cancelSetup`, `setupState`,
   `updateSettings`, `transcript` (a task's conversation), `herderActivity` (what the Herder did,
-  see 08 §6), `pet`, `petSay`, `petPress` (the desktop pet, ADR 0070: what it shows, and the
+  see 08 §6), `herderContext`, `herderMessages`, `herderContextFold` (what its next request carries,
+  its folds as a tree, its requests and token use, read from herd.db alone; ADR 0093, ADR 0096), `pluginCatalog`, `plugins`, `previewPlugin`, `installPlugin`, `setPlugin`, `removePlugin` (plugins, ADR 0094), `pet`, `petSay`, `petPress` (the desktop pet, ADR 0070: what it shows, and the
   owner's message or button press, delivered to the herd as if from the channel; the cards
   AgentHerd sent, ADR 0072), `stopTask` (the owner stops a task from the pet's task card, ADR
   0072). Later:
@@ -123,7 +124,8 @@ All state is under `~/.agentherd/` (overridable by `AGENTHERD_HOME`):
 | Path | Content |
 | --- | --- |
 | `config.json` | Settings and agent profiles, without secrets |
-| `herd.db` | SQLite: sessions, tasks, items, decisions, rules, memory, the Herder's whole conversation (`herder_log`), the cards sent to the owner (`owner_cards`, ADR 0072) |
+| `plugins/` | Installed plugins, one folder each, and the official library cache (ADR 0094) |
+| `herd.db` | SQLite: sessions, tasks, items, decisions, rules, memory, the Herder's whole conversation (`herder_messages` with `herder_rounds`, ADR 0095), the cards sent to the owner (`owner_cards`, ADR 0072), each Herder request's token use (`herder_requests`), its folds (`herder_folds`), events and system prompts (ADR 0095) |
 | `run/herd.sock` | Local API socket (not on Windows, see §4) |
 | `logs/` | Rotated logs. Secrets redacted. |
 | `backups/` | Copies of agent config files before each export |
@@ -141,6 +143,10 @@ Electron main never see a key after it is saved (plan 011). They are never writt
 Display preferences of one screen stay in the desktop app's `localStorage`, not in the home:
 the font size (设置 → 字体大小, `agentherd.fontScale`, 90%–130%; it scales every text size and
 line height, not spacing or icons) and whether the first run ran.
+The colours (设置 → 外观 → 颜色: 跟随系统, 浅色 or 深色) are kept by Electron main in its
+`theme.json` next to the pet's position and applied with `nativeTheme.themeSource`, so the main
+window, its frame and the pet switch together and the first frame after a restart is already
+right; dark is the base palette in `tokens.css`, light replaces values only.
 
 All TypeScript is erasable syntax only (`erasableSyntaxOnly`), so Node runs the sources
 directly with type stripping; there is no build step for packages.

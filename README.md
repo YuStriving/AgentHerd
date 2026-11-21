@@ -26,7 +26,9 @@ English · [简体中文](README.zh-CN.md)
 - **A Herder that talks like a person.** The Herder is a light-model agent that takes your
   messages, starts and follows tasks, and tells you each result in its own words, with the
   agent's own reply one tap away. It talks like a capable friend. The app's 「主管」 page shows
-  every step it took and why.
+  every step it took and why, and what its next request carries: how full it is, which earlier
+  talk is folded into summaries (as a tree that shows which fold holds which), and the tokens,
+  cache hits and cost of every request, read from `herd.db` even while the Herder is off.
 - **The right agent and model for each task.** Pi and Codex (for GPT models) come inside the app;
   Claude Code takes hard coding work, using your own `claude` or a download on the **Agent** page,
   with your own Anthropic-style model service. They run through the
@@ -47,6 +49,9 @@ English · [简体中文](README.zh-CN.md)
   sheets and calendar and write results as new docs; changing existing things asks you. GitHub
   Trending, Hacker News and arXiv need no sign-in: ask for a daily digest and nothing repeats.
   Notion comes through Composio, and your Obsidian vault is handed to every task.
+- **Plugins.** Install Claude Code plugins and Gemini CLI extensions from the official library or a
+  GitHub link. You see what they run first; tasks get their tools and skills, tools that change
+  things ask you, and the Herder uses a plugin only if you switch it on.
 - **Schedules in plain words.** "Every weekday at 9, check for new issues" — the Herder makes the
   schedule, and missed runs happen once when your machine wakes.
 - **Memory that stays useful.** The whole conversation is kept, and the Herder folds old parts

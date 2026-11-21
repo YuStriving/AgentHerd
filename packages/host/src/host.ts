@@ -65,6 +65,9 @@ import type {
   FeedSource,
   FeedView,
   HerderActivityView,
+  HerderContextSame,
+  HerderContextView,
+  HerderMessageView,
   HostApi,
   HostEvent,
   HostStatus,
@@ -82,6 +85,10 @@ import type {
   PetOnTop,
   PetSettings,
   PetView,
+  PluginCatalogEntry,
+  PluginPatch,
+  PluginPreview,
+  PluginView,
   ProbeTarget,
   ProfileFieldName,
   ProviderView,
@@ -118,11 +125,14 @@ import { type CliConfig, readConfig, secretFile, writeConfig } from "./config.ts
 import { Danjuan, type DanjuanBrowser } from "./danjuan.ts";
 import { LocalEmbedder } from "./embedder.ts";
 import { FEED_NAMES, Feeds } from "./feeds.ts";
+import { foldText, herderContextView, herderMessages } from "./herder-context-view.ts";
 import { Lark } from "./lark.ts";
 import { mcpServerFor } from "./mcp-socket.ts";
 import { LoginRun } from "./model-logins.ts";
 import { PET_CARDS_MAX, PET_HISTORY_MAX, PetFeed, petConversation } from "./pet.ts";
 import { droppedFiles } from "./pet-drop.ts";
+import type { McpClient } from "./plugin-mcp.ts";
+import { PluginStore, type RunningServer } from "./plugins.ts";
 import { probeModels } from "./probe.ts";
 import { availableProfiles } from "./profiles.ts";
 import { withSystemProxy } from "./proxy.ts";
@@ -168,6 +178,9 @@ export interface HostOptions {
   fetchers?: Fetchers;
   /** HTTP for probeModels (tests). Default: global fetch. */
   fetch?: typeof fetch;
+  /** Plugins (ADR 0094): how a downloaded .tar.gz is unpacked and how a server is reached; tests fake them. */
+  pluginExtract?: (file: string, dir: string) => Promise<void>;
+  pluginClient?: (server: RunningServer) => McpClient;
   /** Runs `gh` for following pull requests tasks open (tests replace it). */
   gh?: GhRun;
   target?: string;
@@ -198,6 +211,8 @@ export class Host implements HostApi {
   private readonly opts: HostOptions;
   private readonly listeners = new Set<(event: HostEvent) => void>();
   private herd: Herd | undefined;
+  /** The 上下文 tab as last built, by its key (ADR 0095). */
+  private contextView: HerderContextView | undefined;
   /** Background memory jobs of the running herd (ADR 0038). */
   private memoryWorker: MemoryWorker | undefined;
   /** Local vector model for memory search, made once and kept across herd restarts. */
@@ -234,6 +249,8 @@ export class Host implements HostApi {
   private readonly danjuanCli: Danjuan;
   /** What the desktop pet sees of the chat (ADR 0070). */
   private readonly petFeed: PetFeed;
+  /** Installed plugins (ADR 0094). */
+  private readonly pluginList: PluginStore;
   /** The Herder's guess at the owner's next message, and when it came (ADR 0084). */
   private petSuggestion: { text: string; at: string } | undefined;
 
@@ -285,6 +302,24 @@ export class Host implements HostApi {
       },
     });
     this.feedList = new Feeds({ home: opts.home, off: () => this.config().feedsOff ?? [] });
+    this.pluginList = new PluginStore({
+      home: opts.home,
+      secrets: opts.secrets,
+      config: () => this.config(),
+      save: (change) => writeConfig(this.opts.home, change(this.config())),
+      changed: () => this.emit({ topic: "plugins", data: this.plugins() }),
+      env: () => {
+        const base: Record<string, string> = {};
+        for (const [k, v] of Object.entries(this.opts.env ?? process.env)) {
+          if (v !== undefined) base[k] = v;
+        }
+        return this.withToolPath(base);
+      },
+      ...(opts.fetch === undefined ? {} : { fetchFn: opts.fetch }),
+      ...(opts.pluginExtract === undefined ? {} : { extract: opts.pluginExtract }),
+      ...(opts.pluginClient === undefined ? {} : { client: opts.pluginClient }),
+      log: (line) => this.log(line),
+    });
     this.westockCli = new Westock({
       home: opts.home,
       enabled: () => !(this.config().westockOff ?? false),
@@ -403,6 +438,8 @@ export class Host implements HostApi {
     if (westock !== undefined) notes.push(westock);
     const danjuan = this.danjuanCli.note();
     if (danjuan !== undefined) notes.push(danjuan);
+    const plugins = this.pluginList.note();
+    if (plugins !== undefined) notes.push(plugins);
     const vault = this.config().obsidianVault;
     if (vault !== undefined && vault !== "") {
       notes.push(
@@ -417,6 +454,32 @@ export class Host implements HostApi {
     this.herd?.socials?.schedule();
     this.emit({ topic: "socials", data: this.socials() });
     this.emit({ topic: "watches", data: this.watches() });
+  }
+
+  // ---- Plugins (ADR 0094) ----
+
+  pluginCatalog(): Promise<PluginCatalogEntry[]> {
+    return this.pluginList.catalog();
+  }
+
+  plugins(): PluginView[] {
+    return this.pluginList.views();
+  }
+
+  previewPlugin(source: string): Promise<PluginPreview> {
+    return this.pluginList.preview(source);
+  }
+
+  installPlugin(source: string, keys: Record<string, string> = {}): Promise<PluginView[]> {
+    return this.pluginList.install(source, keys);
+  }
+
+  setPlugin(id: string, patch: PluginPatch): Promise<PluginView[]> {
+    return this.pluginList.set(id, patch);
+  }
+
+  removePlugin(id: string): Promise<PluginView[]> {
+    return this.pluginList.remove(id);
   }
 
   socials(): SocialView[] {
@@ -575,6 +638,7 @@ export class Host implements HostApi {
     this.socialList.stop();
     this.westockCli.stop();
     this.danjuanCli.stop();
+    this.pluginList.stopAll();
     this.setupRun++;
     await this.stopHerd();
   }
@@ -651,6 +715,11 @@ export class Host implements HostApi {
           this.emit({ topic: "pet", data: this.pet() });
         },
       },
+      plugins: {
+        list: () => this.pluginList.herderList(),
+        call: (name, args) => this.pluginList.herderCall(name, args),
+        skill: (name) => this.pluginList.skillText(name),
+      },
       ...(herder === undefined ? {} : { herder }),
       ...(this.opts.mcpSocket === undefined
         ? {}
@@ -662,6 +731,7 @@ export class Host implements HostApi {
                 this.feedList.tools(),
                 this.westockCli.tools(),
                 this.danjuanCli.tools(),
+                this.pluginList.tools(),
               ]),
             appNames: () => this.appList.connectedNames(),
           }),
@@ -988,6 +1058,28 @@ export class Host implements HostApi {
       .reverse()
       .map((r) => ({ at: r.at, kind: r.kind, data: r.data }));
     return { turns, incidents, total: all.length };
+  }
+
+  herderContext(known?: string): HerderContextView | HerderContextSame {
+    const store = this.herd?.store;
+    if (store === undefined) throw new Error("AgentHerd is not running yet");
+    const on = this.herd?.herderPort() !== undefined;
+    const key = `${on ? 1 : 0}|${store.herder.version()}`;
+    if (known === key) return { key, unchanged: true };
+    if (this.contextView?.key !== key) this.contextView = herderContextView(store, on, key);
+    return this.contextView;
+  }
+
+  herderMessages(from: number, to: number): HerderMessageView[] {
+    const store = this.herd?.store;
+    if (store === undefined) throw new Error("AgentHerd is not running yet");
+    return herderMessages(store, from, to);
+  }
+
+  herderContextFold(blockId: string): string {
+    const store = this.herd?.store;
+    if (store === undefined) throw new Error("AgentHerd is not running yet");
+    return foldText(store, blockId);
   }
 
   memories(): MemoryView {

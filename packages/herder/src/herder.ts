@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { CompressionState } from "@agentherd/context-kernel";
 import type {
+  HerderContextSnapshot,
   HerderEvent,
   HerderHost,
   HerderPort,
@@ -22,6 +23,7 @@ import {
   changedFrom,
   HerderContext,
   leadingSystem,
+  promptOf,
   withoutContextMarks,
   withoutMarksDeep,
 } from "./context.ts";
@@ -30,6 +32,7 @@ import { herdUiFixPrompt, herdUiPrompt } from "./herd-ui-prompt.ts";
 import { LOOKUP_TOOL_NAMES, type LookupOptions, lookupTools } from "./lookup.ts";
 import { memorySnapshot, memoryTools, recallBlock } from "./memory.ts";
 import type { TierPlacement } from "./model-guide.ts";
+import { PLUGIN_TOOL_NAMES, pluginTools } from "./plugin-tools.ts";
 import {
   accountsPrompt,
   eventsPrompt,
@@ -166,6 +169,12 @@ export class Herder implements HerderPort {
   private readonly ownKey: HerderOptions["getApiKey"];
   /** The last request as sent: how many messages went in, and the folded view the model saw. */
   private lastView: { input: number; view: AgentMessage[] } | undefined;
+  /** What each request of the current try was made of, in order (ADR 0093). */
+  private sent: { snapshot: HerderContextSnapshot; prompt?: string }[] = [];
+  /** The system prompt last kept in `herder_prompts`. */
+  private keptPrompt: string | undefined;
+  /** Where the message that started the current round sits (ADR 0095). */
+  private round: number | undefined;
   /** Counts suggestion runs; a newer turn makes an older one stale (ADR 0084). */
   private suggestSeq = 0;
   private suggestAbort: AbortController | undefined;
@@ -189,9 +198,11 @@ export class Herder implements HerderPort {
         contextWindow: () => this.current.model.contextWindow,
         messages: () => this.agent.state.messages,
         audit: (type, data) => this.host.audit(type, data),
+        event: (kind, data) => this.logEvent(kind, data),
       },
       log,
       this.host.getState<CompressionState>(CONTEXT_STATE_KEY),
+      this.host.herderFolds?.() ?? [],
     );
     this.agent = new Agent({
       streamFn: opts.streamFn,
@@ -200,6 +211,13 @@ export class Herder implements HerderPort {
       transformContext: async (messages) => {
         const view = await this.context.project(messages);
         this.lastView = { input: messages.length, view };
+        const prompt = this.keepPrompt(view);
+        if (this.context.snapshot !== undefined) {
+          this.sent.push({
+            snapshot: this.context.snapshot,
+            ...(prompt === undefined ? {} : { prompt }),
+          });
+        }
         return view;
       },
       initialState: {
@@ -213,6 +231,7 @@ export class Herder implements HerderPort {
               ? []
               : memoryTools(this.host.memory, () => this.turn, this.host.embedder)),
             ...(opts.lookup === false ? [] : lookupTools(opts.lookup)),
+            ...pluginTools(this.host),
           ].map(withoutMarksInArgs),
           ...this.context.tools(),
         ],
@@ -221,6 +240,40 @@ export class Herder implements HerderPort {
     });
     const messages = this.agent.state.messages;
     this.saved = messages.slice(leadingSystem(messages));
+    // Folds kept in the state before ADR 0095, or straightened just now: into herder_folds at once.
+    if (this.host.herderFolds?.().length === 0 || this.context.repaired.length > 0) {
+      this.saveContext();
+    }
+    this.logEvent("start", {
+      messages: this.saved.length,
+      folds: this.context.state.blocks.filter((b) => b.active).length,
+      repaired: this.context.repaired,
+    });
+  }
+
+  /** Something that happened to the conversation, kept with the round it happened in. */
+  private logEvent(kind: string, data: Record<string, unknown>): void {
+    try {
+      this.host.herderEvent?.(kind, data, this.round);
+    } catch {
+      // The event log is for the 上下文 tab; it never stops the Herder.
+    }
+  }
+
+  /** Keeps the system prompt and tools once per change; @returns their hash. */
+  private keepPrompt(view: readonly AgentMessage[]): string | undefined {
+    if (this.host.recordPrompt === undefined) return undefined;
+    try {
+      const prompt = promptOf(view);
+      if (prompt === undefined) return undefined;
+      if (prompt.hash !== this.keptPrompt) {
+        this.host.recordPrompt(prompt);
+        this.keptPrompt = prompt.hash;
+      }
+      return prompt.hash;
+    } catch {
+      return undefined;
+    }
   }
 
   ownerMessage(text: string, images: OwnerImage[] = []): void {
@@ -748,6 +801,7 @@ export class Herder implements HerderPort {
       return accountsPrompt({
         socials: (this.host.socialWatches?.() ?? []).map((s) => ({ name: s.name, ready: s.ready })),
         apps: this.host.apps?.() ?? [],
+        ...(this.host.plugins === undefined ? {} : { plugins: this.host.plugins.list() }),
       });
     } catch {
       return accountsPrompt({ socials: [], apps: [] });
@@ -785,6 +839,10 @@ export class Herder implements HerderPort {
   /** One try. A failed try leaves no trace in the session. */
   private async attempt(prompt: string, images: OwnerImage[]): Promise<Attempt> {
     const before = this.agent.state.messages.length;
+    const lead = leadingSystem(this.agent.state.messages);
+    this.sent = [];
+    // The prompt goes in at `before`: that message starts the round.
+    this.round = before - lead;
     let message: string | undefined;
     let overflow = false;
     try {
@@ -807,6 +865,11 @@ export class Herder implements HerderPort {
     } catch (error) {
       message = (error as Error).message;
     }
+    this.recordRequests(
+      this.agent.state.messages.slice(before),
+      before - lead,
+      message === undefined,
+    );
     if (message === undefined) return { ok: true };
     const added = this.agent.state.messages.slice(before);
     // Folding or reading the conversation changed nothing outside it, so the turn may run again.
@@ -816,14 +879,54 @@ export class Herder implements HerderPort {
         m.role === "toolResult" &&
         !CONTEXT_TOOL_NAMES.has(m.toolName) &&
         !LOOKUP_TOOL_NAMES.has(m.toolName) &&
+        // The Herder's plugin tools are read-only (ADR 0094).
+        !PLUGIN_TOOL_NAMES.has(m.toolName) &&
         m.toolName !== "stock_quote" &&
         m.toolName !== "fund_holdings",
     );
-    const lead = leadingSystem(this.agent.state.messages);
     this.agent.state.messages = this.agent.state.messages.slice(0, before);
     this.context.rollback(before - lead);
     this.save();
     return { ok: false, message, acted, overflow };
+  }
+
+  /**
+   * Keeps what the provider counted for each request of a try, with what we sent (ADR 0093). Every
+   * assistant message answers one request, in the order the snapshots were taken.
+   */
+  private recordRequests(added: readonly AgentMessage[], round: number, kept: boolean): void {
+    const record = this.host.recordRequest;
+    if (record === undefined) return;
+    let n = 0;
+    added.forEach((m, k) => {
+      if (m.role !== "assistant") return;
+      const sent = this.sent[n++];
+      if (sent === undefined) return;
+      const usage = m.usage;
+      const counted = (usage?.input ?? 0) + (usage?.cacheRead ?? 0) + (usage?.cacheWrite ?? 0);
+      try {
+        record({
+          at: new Date(m.timestamp > 0 ? m.timestamp : this.now()).toISOString(),
+          model: `${m.provider}/${m.model}`,
+          input: usage?.input ?? 0,
+          output: usage?.output ?? 0,
+          cacheRead: usage?.cacheRead ?? 0,
+          cacheWrite: usage?.cacheWrite ?? 0,
+          cost: usage?.cost?.total ?? 0,
+          tokens: counted > 0 ? counted : sent.snapshot.tokens,
+          window: sent.snapshot.window,
+          parts: sent.snapshot.parts,
+          // A try that failed is taken back, so its replies have no place in the conversation.
+          ...(kept ? { seq: round + k } : {}),
+          round,
+          ...(sent.prompt === undefined ? {} : { prompt: sent.prompt }),
+          ...(m.stopReason === "error" ? { failed: true } : {}),
+        });
+      } catch {
+        // Keeping numbers for the 上下文 tab must never break a turn.
+      }
+    });
+    this.sent = [];
   }
 
   /** Guard list on every tool call (docs/spec/06-security.md). A hit blocks the call and tells the owner. */
@@ -866,7 +969,20 @@ export class Herder implements HerderPort {
       this.host.writeHerderLog(from, log.slice(from));
     }
     this.saved = log;
-    this.host.setState(CONTEXT_STATE_KEY, this.context.state);
+    this.saveContext();
+  }
+
+  /** The engine's bookkeeping and the folds that changed (ADR 0095); the whole state on old hosts. */
+  private saveContext(): void {
+    if (this.host.saveHerderContext === undefined || this.host.herderFolds === undefined) {
+      this.host.setState(CONTEXT_STATE_KEY, this.context.state);
+      return;
+    }
+    this.host.saveHerderContext(
+      CONTEXT_STATE_KEY,
+      this.context.bookkeeping(),
+      this.context.changedFolds(this.saved),
+    );
   }
 }
 

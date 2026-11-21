@@ -36,6 +36,9 @@ import type {
   ModelTiersView,
   PetCard,
   PetView,
+  PluginCatalogEntry,
+  PluginPreview,
+  PluginView,
   RemoteHost,
   SchedulesView,
   SetupState,
@@ -48,6 +51,7 @@ import type {
 import { DEFAULT_PET } from "@agentherd/host/api";
 import { HERD_UI_TARGET, herdUiChoices, herdUiFence } from "@agentherd/protocol/herd-ui";
 import type { Bridge } from "../../shared/bridge";
+import type { Theme } from "../../shared/theme";
 import {
   hoursFromNow,
   PLACEHOLDER_QR,
@@ -55,6 +59,8 @@ import {
   SAMPLE_SUBSCRIPTIONS,
   sampleFeeds,
   sampleHerderActivity,
+  sampleHerderContext,
+  sampleHerderMessages,
   sampleLark,
   sampleMemory,
   sampleSchedules,
@@ -80,6 +86,7 @@ function simulation(): Sim {
 function installFakeBridge(): void {
   const sim = simulation();
   const herderChosen = sim !== "fresh" && sim !== "bound" && sim !== "network";
+  let devTheme: Theme = "system";
   const eventListeners = new Set<Listener<HostEvent>>();
   const connectionListeners = new Set<Listener<boolean>>();
   const keys = new Map<string, string>([["deepseek", "sk-fake"]]);
@@ -458,6 +465,105 @@ function installFakeBridge(): void {
     danjuan = next;
     emit({ topic: "danjuan", data: structuredClone(danjuan) });
   };
+  // 插件 (ADR 0094): one installed plugin and a small library.
+  const pluginCatalog: PluginCatalogEntry[] = [
+    {
+      name: "context7",
+      title: "Context7",
+      description:
+        "Upstash Context7 MCP server for up-to-date documentation lookup. Pull version-specific docs and code examples directly from source repositories into your LLM context.",
+      category: "development",
+      author: "Upstash",
+      source: "official:context7",
+      installed: true,
+    },
+    {
+      name: "github",
+      title: "GitHub",
+      description:
+        "Official GitHub MCP server for repository management. Create issues, manage pull requests, review code, search repositories.",
+      category: "productivity",
+      author: "GitHub",
+      source: "official:github",
+      installed: false,
+    },
+    {
+      name: "playwright",
+      title: "Playwright",
+      description: "Browser automation and end-to-end testing MCP server by Microsoft.",
+      category: "testing",
+      author: "Microsoft",
+      source: "official:playwright",
+      installed: false,
+    },
+    {
+      name: "code-review",
+      title: "Code Review",
+      description: "Automated code review for pull requests using multiple specialized agents.",
+      category: "productivity",
+      author: "Anthropic",
+      source: "official:code-review",
+      installed: false,
+    },
+    {
+      name: "xcode",
+      title: "Xcode",
+      description: "Build and test iOS apps from Xcode.",
+      category: "development",
+      why: "要用它自己的命令装，AgentHerd 不支持",
+      installed: false,
+    },
+  ];
+  let plugins: PluginView[] = [
+    {
+      id: "context7",
+      source: "official:context7",
+      link: "https://github.com/anthropics/claude-plugins-official/tree/main/external_plugins/context7",
+      name: "context7",
+      description: "Upstash Context7 MCP server for up-to-date documentation lookup",
+      format: "claude",
+      servers: [
+        {
+          name: "context7",
+          kind: "http",
+          run: "https://mcp.context7.com/mcp?client=claude-code-plugin",
+        },
+      ],
+      keys: [],
+      skills: [],
+      ignored: [],
+      problems: [],
+      enabled: true,
+      herder: false,
+      installedAt: "2026-11-21T07:30:00.000Z",
+      state: "ready",
+      tools: 2,
+      readTools: 2,
+      keysSet: [],
+      dir: "~/.agentherd/plugins/context7",
+    },
+  ];
+  const setPlugins = (next: PluginView[]): PluginView[] => {
+    plugins = next;
+    emit({ topic: "plugins", data: structuredClone(plugins) });
+    return structuredClone(plugins);
+  };
+  const pluginPreview = (source: string): PluginPreview => ({
+    source,
+    link: "https://github.com/anthropics/claude-plugins-official/tree/main/external_plugins/github",
+    name:
+      source
+        .replace(/^official:/, "")
+        .split("/")
+        .pop() ?? "plugin",
+    description: "Official GitHub MCP server for repository management.",
+    format: "claude",
+    servers: [{ name: "github", kind: "http", run: "https://api.githubcopilot.com/mcp/" }],
+    keys: ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+    skills: [{ name: "pr-review", description: "Review a pull request step by step" }],
+    ignored: ["3 个斜杠命令", "1 个子 Agent"],
+    problems: [],
+  });
   /** Changes 飞书 and tells the page, as the host's "lark" event does. */
   const setLark = (next: LarkView): void => {
     lark = next;
@@ -759,6 +865,48 @@ function installFakeBridge(): void {
       });
     },
     danjuan: () => delay(structuredClone(danjuan)),
+    pluginCatalog: () => delay(structuredClone(pluginCatalog)),
+    plugins: () => delay(structuredClone(plugins)),
+    previewPlugin: async (source) => {
+      await new Promise((r) => setTimeout(r, 600));
+      return pluginPreview(source);
+    },
+    installPlugin: async (source) => {
+      const p = pluginPreview(source);
+      return setPlugins([
+        ...plugins,
+        {
+          ...p,
+          id: p.name,
+          enabled: true,
+          herder: false,
+          installedAt: new Date().toISOString(),
+          state: "idle",
+          tools: 0,
+          readTools: 0,
+          keysSet: [],
+          dir: `~/.agentherd/plugins/${p.name}`,
+        },
+      ]);
+    },
+    setPlugin: async (id, patch) =>
+      setPlugins(
+        plugins.map((p) =>
+          p.id === id
+            ? {
+                ...p,
+                ...(patch.enabled === undefined
+                  ? {}
+                  : { enabled: patch.enabled, state: patch.enabled ? "ready" : "off" }),
+                ...(patch.herder === undefined ? {} : { herder: patch.herder }),
+                ...(patch.keys === undefined
+                  ? {}
+                  : { keysSet: [...new Set([...p.keysSet, ...Object.keys(patch.keys)])] }),
+              }
+            : p,
+        ),
+      ),
+    removePlugin: async (id) => setPlugins(plugins.filter((p) => p.id !== id)),
     connectDanjuan: async (accepted) => {
       if (!accepted && !danjuan.accepted) {
         throw new Error("连接雪球基金前需先确认只读风险提示");
@@ -953,6 +1101,15 @@ function installFakeBridge(): void {
     tasks: () => delay(tasks),
     transcript: (taskId) => delay(sampleTranscript(taskId)),
     herderActivity: () => delay(sampleHerderActivity()),
+    herderContext: (known?: string) =>
+      delay(
+        known === "sample" ? { key: "sample", unchanged: true as const } : sampleHerderContext(),
+      ),
+    herderMessages: (from: number, to: number) => delay(sampleHerderMessages(from, to)),
+    herderContextFold: (blockId: string) =>
+      delay(
+        `${blockId} 原文\n\n[Owner's message]\n帮我看看别人的搜索方案\n\n主管：Codex 和 Claude Code 都只有一个 web_search……`,
+      ),
     memories: () => delay(memory),
     schedules: () => delay(schedules),
     setSchedulePaused: (id, paused) => {
@@ -1217,6 +1374,13 @@ function installFakeBridge(): void {
       state: async () => ({ talk: "ok", approve: "ok" }),
       onState: () => () => {},
       pause: () => {},
+    },
+    // The browser cannot change prefers-color-scheme; the choice is only kept here.
+    theme: {
+      get: async () => devTheme,
+      set: async (theme) => {
+        devTheme = theme;
+      },
     },
     onEvent: (listener) => {
       eventListeners.add(listener);
