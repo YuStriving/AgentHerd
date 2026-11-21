@@ -48,7 +48,7 @@ import type {
   WestockTest,
   WestockView,
 } from "@agentherd/host/api";
-import { DEFAULT_PET } from "@agentherd/host/api";
+import { DEFAULT_HERDER_WINDOW, DEFAULT_PET } from "@agentherd/host/api";
 import { HERD_UI_TARGET, herdUiChoices, herdUiFence } from "@agentherd/protocol/herd-ui";
 import type { Bridge } from "../../shared/bridge";
 import type { Theme } from "../../shared/theme";
@@ -112,6 +112,7 @@ function installFakeBridge(): void {
     mode: "observe",
     locale: "zh-CN",
     keepAwake: true,
+    herderWindow: DEFAULT_HERDER_WINDOW,
     profiles: sim === "no-agent" ? [] : ["pi"],
     // `?quiet=1`: the pet keeps quiet (ADR 0079).
     pet: {
@@ -1103,7 +1104,9 @@ function installFakeBridge(): void {
     herderActivity: () => delay(sampleHerderActivity()),
     herderContext: (known?: string) =>
       delay(
-        known === "sample" ? { key: "sample", unchanged: true as const } : sampleHerderContext(),
+        known === `sample-${status.herderWindow}`
+          ? { key: known, unchanged: true as const }
+          : sampleHerderContext(status.herderWindow),
       ),
     herderMessages: (from: number, to: number) => delay(sampleHerderMessages(from, to)),
     herderContextFold: (blockId: string) =>

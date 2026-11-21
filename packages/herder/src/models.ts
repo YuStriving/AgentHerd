@@ -198,6 +198,8 @@ export function herderFromSettings(
   env?: Record<string, string>,
   modelTiers?: () => TierPlacement,
   lookup?: LookupOptions,
+  /** The working window the owner picked (ADR 0097), read on each request. */
+  contextCap?: () => number,
 ): HerderChoice | { reason: string } {
   const choice = modelFor(settings, "herder");
   if (choice === undefined) return { reason: "no model chosen for the Herder" };
@@ -223,6 +225,7 @@ export function herderFromSettings(
         fallbacks: () => herderFallbacks(settings, secrets, ref, modelTiers?.(), env),
         ...(modelTiers === undefined ? {} : { modelTiers }),
         ...(lookup === undefined ? {} : { lookup }),
+        ...(contextCap === undefined ? {} : { contextCap }),
       }),
   };
 }

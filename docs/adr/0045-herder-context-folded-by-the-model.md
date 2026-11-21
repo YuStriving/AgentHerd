@@ -1,6 +1,6 @@
 # ADR 0045: The Herder keeps its whole conversation and folds it itself (billion-context's kernel)
 
-- Status: Accepted; the Herder's own replies carry no ref tag since [ADR 0073](0073-the-pets-conversation-looks-like-a-chat.md)
+- Status: Accepted; the Herder's own replies carry no ref tag since [ADR 0073](0073-the-pets-conversation-looks-like-a-chat.md); the owner picks the working window since [ADR 0097](0097-the-owner-picks-the-herders-working-window.md)
 - Date: 2026-11-08
 - Related: [ADR 0003](0003-herder-on-pi-agent-core.md), [ADR 0009](0009-mit-license-reference-only.md),
   [ADR 0020](0020-fork-pi-agent-loop-track-upstream.md), [ADR 0037](0037-herder-retries-and-never-drops.md)

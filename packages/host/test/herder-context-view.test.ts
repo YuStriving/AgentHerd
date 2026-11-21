@@ -130,6 +130,16 @@ describe("the 上下文 tab from herd.db (ADR 0095)", () => {
     expect(view.now?.noPrompt).toBeUndefined();
     expect(view.now?.window).toBe(128_000);
     expect(view.now?.foldAt).toBe(115_200);
+    // The owner's pick of working window (ADR 0097), never more than the model's.
+    const bigger = herderContextView(store, false, "k", { model: 1_000_000, choice: 256_000 });
+    expect(bigger.now).toMatchObject({
+      window: 256_000,
+      foldAt: 230_400,
+      choice: 256_000,
+      modelWindow: 1_000_000,
+    });
+    const whole = herderContextView(store, false, "k", { model: 1_000_000, choice: 0 });
+    expect(whole.now).toMatchObject({ window: 1_000_000, choice: 0 });
     // The folded 6,000 characters are gone from what goes out; the summary is there.
     expect(view.now?.tokens).toBeLessThan(view.facts.tokens);
     expect(view.now?.parts.system).toBeGreaterThan(0);

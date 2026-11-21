@@ -55,10 +55,22 @@ const FOLD_START = "[Compressed conversation section]";
  */
 export const CONTEXT_STATE_KEY = "herder.context";
 /**
- * The window the Herder works in: the model's, but at most this, and this when the model does not
- * say. Every request sends the whole view, and a chat with the owner needs no more.
+ * The working window the Herder uses unless the owner picks another (ADR 0097): the model's, but at
+ * most this, and this when the model does not say. Every request sends the whole view, so a bigger
+ * window makes each reply slower and dearer.
  */
 export const CONTEXT_WINDOW_MAX = 128_000;
+/** The working windows the owner can pick (ADR 0097); 0 is the model's whole window. */
+export const CONTEXT_WINDOW_CHOICES = [64_000, 128_000, 256_000, 0] as const;
+
+/**
+ * The window the Herder works in: the owner's choice, never more than the model's. A choice of 0
+ * means the model's whole window; a model that does not say gets the choice (or the default).
+ */
+export function workingWindow(model: number, choice: number = CONTEXT_WINDOW_MAX): number {
+  if (choice <= 0) return model > 0 ? model : CONTEXT_WINDOW_MAX;
+  return model > 0 ? Math.min(model, choice) : choice;
+}
 /** At this share of the window, unfolded old messages are folded without waiting for the model… */
 export const FORCED_FOLD_AT = 0.9;
 /** …until the context is down to about this share. */
@@ -87,6 +99,8 @@ type Content = string | readonly { type: string; text?: string }[];
 export interface ContextHooks {
   /** The current model's context window in tokens; 0 when unknown. */
   contextWindow(): number;
+  /** The working window the owner picked (ADR 0097), 0 for the model's whole window; read each time. */
+  contextCap?(): number;
   /** The agent's messages now, the leading system message included. */
   messages(): readonly AgentMessage[];
   audit(type: string, data: Record<string, unknown>): void;
@@ -730,8 +744,9 @@ export class HerderContext {
   }
 
   private config(): Config {
-    const window = this.hooks.contextWindow();
-    return defaultConfig(window > 0 ? Math.min(window, CONTEXT_WINDOW_MAX) : CONTEXT_WINDOW_MAX);
+    return defaultConfig(
+      workingWindow(this.hooks.contextWindow(), this.hooks.contextCap?.() ?? CONTEXT_WINDOW_MAX),
+    );
   }
 
   private log(): AgentMessage[] {

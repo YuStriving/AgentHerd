@@ -18,6 +18,7 @@ import {
   type ModelRole,
   type ModelService,
   type ModelSettings,
+  modelFor,
   modelKeyAccount,
   profileField,
   putService,
@@ -109,7 +110,9 @@ import type {
   WestockView,
 } from "./api.ts";
 import {
+  DEFAULT_HERDER_WINDOW,
   DEFAULT_PET,
+  HERDER_WINDOWS,
   isPetShortcut,
   PET_FIGURES,
   PET_ON_TOP,
@@ -904,6 +907,7 @@ export class Host implements HostApi {
       () => this.placement(),
       // The owner's own GitHub sign-in, when there is one, lifts GitHub's limit (ADR 0071).
       { githubToken: () => gh(["auth", "token"]) },
+      () => this.herderWindow(),
     );
     return "factory" in choice ? choice.factory : undefined;
   }
@@ -966,7 +970,27 @@ export class Host implements HostApi {
       ...(config.obsidianVault ? { obsidianVault: config.obsidianVault } : {}),
       profiles: this.profileList.map((p) => p.id),
       pet: petSettings(config),
+      herderWindow: this.herderWindow(),
     };
+  }
+
+  /** The Herder's working window the owner picked (ADR 0097); 0 is the model's whole window. */
+  private herderWindow(): number {
+    const w = this.config().herderWindow;
+    return (HERDER_WINDOWS as readonly number[]).includes(w ?? -1)
+      ? (w as number)
+      : DEFAULT_HERDER_WINDOW;
+  }
+
+  /** The Herder's model's own context window, 0 when unknown. */
+  private herderModelWindow(): number {
+    const choice = modelFor(this.settings(), "herder");
+    if (choice === undefined) return 0;
+    try {
+      return resolveModel(choice.service, choice.model).contextWindow ?? 0;
+    } catch {
+      return 0;
+    }
   }
 
   pet(): PetView {
@@ -1064,9 +1088,12 @@ export class Host implements HostApi {
     const store = this.herd?.store;
     if (store === undefined) throw new Error("AgentHerd is not running yet");
     const on = this.herd?.herderPort() !== undefined;
-    const key = `${on ? 1 : 0}|${store.herder.version()}`;
+    const windows = { model: this.herderModelWindow(), choice: this.herderWindow() };
+    const key = `${on ? 1 : 0}|${windows.model}|${windows.choice}|${store.herder.version()}`;
     if (known === key) return { key, unchanged: true };
-    if (this.contextView?.key !== key) this.contextView = herderContextView(store, on, key);
+    if (this.contextView?.key !== key) {
+      this.contextView = herderContextView(store, on, key, windows);
+    }
     return this.contextView;
   }
 
@@ -1463,6 +1490,12 @@ export class Host implements HostApi {
       this.herd?.setMode(patch.mode);
     }
     if (patch.keepAwake !== undefined) next.keepAwake = patch.keepAwake;
+    if (patch.herderWindow !== undefined) {
+      if (!(HERDER_WINDOWS as readonly number[]).includes(patch.herderWindow)) {
+        throw new Error(`herderWindow must be one of ${HERDER_WINDOWS.join(", ")}`);
+      }
+      next.herderWindow = patch.herderWindow;
+    }
     if (patch.pet !== undefined) {
       const pet: PetSettings = { ...petSettings(config), ...patch.pet };
       for (const key of ["on", "notify", "sound", "overFullscreen", "suggest"] as const) {

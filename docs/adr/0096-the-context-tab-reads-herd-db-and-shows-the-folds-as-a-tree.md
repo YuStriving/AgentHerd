@@ -48,6 +48,9 @@ after ADR 0095 put the conversation, the requests and the folds into tables, the
    - 折叠记录: folds made (by the Herder, forced, overflow; merged or opened later), starts, and
      straightened ranges, newest first.
 
+Changed 2026-11-21: the 主管 page always opens on 「上下文」, which comes first, and no longer
+remembers the last tab (ADR 0093 decision 1). The owner: 「agentherd默认是上下文，不是行动记录」.
+
 ## Alternatives
 
 - **Ask the running Herder.** It is what ADR 0093 did; it shows nothing when the Herder is off or

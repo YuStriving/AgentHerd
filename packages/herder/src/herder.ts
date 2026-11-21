@@ -77,6 +77,8 @@ export interface HerderOptions {
   now?: () => number;
   /** How web_search and web_read reach the web (ADR 0071); false leaves them out. */
   lookup?: LookupOptions | false;
+  /** The working window the owner picked (ADR 0097), 0 for the model's whole; read each request. */
+  contextCap?: () => number;
 }
 
 /** A model the Herder can run on. */
@@ -196,6 +198,7 @@ export class Herder implements HerderPort {
     this.context = new HerderContext(
       {
         contextWindow: () => this.current.model.contextWindow,
+        ...(opts.contextCap === undefined ? {} : { contextCap: opts.contextCap }),
         messages: () => this.agent.state.messages,
         audit: (type, data) => this.host.audit(type, data),
         event: (kind, data) => this.logEvent(kind, data),

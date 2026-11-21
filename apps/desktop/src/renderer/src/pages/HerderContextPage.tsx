@@ -41,8 +41,10 @@ import {
   spanOf,
   summaryWhere,
   timeOf,
+  WINDOW_OPTIONS,
+  windowLine,
 } from "../herder-context";
-import { host } from "../store";
+import { call, host } from "../store";
 
 const POLL_MS = 5000;
 const RAW_COLOR = PART_COLORS.herder;
@@ -98,7 +100,7 @@ function Fact({ value, label }: { value: string; label: string }) {
 
 // ---------- 现在送给模型的
 
-function NowCard({ view }: { view: HerderContextView }) {
+function NowCard({ view, onWindow }: { view: HerderContextView; onWindow: () => void }) {
   const { now, facts } = view;
   const last = view.requests.at(-1);
   const first = view.rounds[0];
@@ -115,7 +117,10 @@ function NowCard({ view }: { view: HerderContextView }) {
       {now === undefined ? (
         <p className="text-danger-text text-sm">算不出来：{view.problem ?? "还没有对话"}</p>
       ) : (
-        <NowBar now={now} />
+        <>
+          <NowBar now={now} />
+          <WindowPicker now={now} onWindow={onWindow} />
+        </>
       )}
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
         <Fact
@@ -186,6 +191,37 @@ function NowBar({ now }: { now: HerderContextNow }) {
         </p>
       )}
     </>
+  );
+}
+
+/** The owner picks the working window (ADR 0097); the model's own window stays the upper limit. */
+function WindowPicker({ now, onWindow }: { now: HerderContextNow; onWindow: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const pick = async (value: string) => {
+    setBusy(true);
+    await call((h) => h.updateSettings({ herderWindow: Number(value) }));
+    setBusy(false);
+    onWindow();
+  };
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-control px-3 py-2.5">
+      <div className="min-w-0 flex-1">
+        <div className="text-ink-2 text-sm">主管的工作窗口 · {windowLine(now)}</div>
+        <div className="text-ink-dim text-xs">
+          {
+            "对话到了窗口的 90%，主管就把最早的部分折成摘要。窗口大，原文留得多，但每次回复更慢、更贵；不会超过模型自己的上限。"
+          }
+        </div>
+      </div>
+      <div className={busy ? "pointer-events-none opacity-60" : ""}>
+        <Segmented
+          label="主管的工作窗口"
+          options={WINDOW_OPTIONS}
+          value={String(now.choice)}
+          onChange={(v) => void pick(v)}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -305,7 +341,7 @@ function MapCard({
               y={BOTTOM_Y + BOX_H + 18}
               className="fill-(--color-ink-muted) text-[11px]"
             >
-              {formatTokens(view.now?.window ?? 0)} 窗口
+              工作窗口 {formatTokens(view.now?.window ?? 0)}
             </text>
           </>
         )}
@@ -1095,6 +1131,7 @@ export function HerderContextPanel() {
   const [selected, setSelected] = useState<string | undefined>();
   const [originals, setOriginals] = useState<string | undefined>();
   const key = useRef<string | undefined>(undefined);
+  const reload = useRef<() => void>(() => {});
   useEffect(() => {
     let alive = true;
     const load = () =>
@@ -1109,6 +1146,7 @@ export function HerderContextPanel() {
         .catch((e: Error) => {
           if (alive) setError(e.message);
         });
+    reload.current = () => void load();
     void load();
     const timer = setInterval(load, POLL_MS);
     return () => {
@@ -1134,7 +1172,7 @@ export function HerderContextPanel() {
     );
   return (
     <div className="flex flex-col gap-4">
-      <NowCard view={view} />
+      <NowCard view={view} onWindow={() => reload.current()} />
       <MapCard view={view} selected={selected} select={setSelected} showOriginals={setOriginals} />
       <TreeCard view={view} selected={selected} select={setSelected} showOriginals={setOriginals} />
       <RequestsCard view={view} />

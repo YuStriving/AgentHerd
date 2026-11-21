@@ -18,7 +18,7 @@ and write) arrived on every assistant message and was thrown away with the turn.
 
 ## Decision
 
-1. **A 「上下文」 tab on the 主管 page,** next to 「行动记录」; the page remembers the last tab.
+1. **A 「上下文」 tab on the 主管 page,** next to 「行动记录」; the page remembers the last tab. (Since ADR 0096 the page always opens on 「上下文」, which comes first.)
    Our own code; only the layout follows dsh-context.
 2. **Current context.** The last request the Herder sent, as one bar against the working window
    (the model's context, at most 128K), split into seven parts: 系统提示词, 记忆 (the resident

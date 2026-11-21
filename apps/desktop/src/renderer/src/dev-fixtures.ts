@@ -645,7 +645,10 @@ export function sampleHerderActivity(): HerderActivityView {
 }
 
 /** A Herder that has talked a week, folded three times and once folded two folds into one. */
-export function sampleHerderContext(): HerderContextView {
+/** `choice` is the owner's working window (ADR 0097); the sample model allows 1M. */
+export function sampleHerderContext(choice = 128_000): HerderContextView {
+  const modelWindow = 1_000_000;
+  const window = choice > 0 ? Math.min(choice, modelWindow) : modelWindow;
   const now = Date.now();
   const HOUR = 3_600_000;
   const start = now - 6 * 24 * HOUR;
@@ -805,12 +808,14 @@ export function sampleHerderContext(): HerderContextView {
   total.hitRate = total.cacheRead / (total.input + total.cacheRead);
   const tokens = Object.values(parts).reduce((a, b) => a + b, 0);
   return {
-    key: "sample",
+    key: `sample-${choice}`,
     on: true,
     now: {
       tokens,
-      window: 128_000,
-      foldAt: 115_200,
+      window,
+      foldAt: window * 0.9,
+      choice,
+      modelWindow,
       parts,
       items: [
         item("system", "系统提示词", 9_000, "你是 AgentHerd 的主管……"),

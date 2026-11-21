@@ -1,6 +1,6 @@
-// 主管: the Herder's action trail (行动记录) and what its requests are made of (上下文, ADR 0093).
-// Its model is chosen on the 模型 page; when the Herder is not working, one line says why and
-// links there.
+// 主管: what the Herder's requests are made of (上下文, ADR 0093) and its action trail (行动记录).
+// The page always opens on 上下文 (ADR 0096). Its model is chosen on the 模型 page; when the
+// Herder is not working, one line says why and links there.
 
 import { CircleAlert } from "lucide-react";
 import { useState } from "react";
@@ -10,33 +10,16 @@ import { useApp } from "../store";
 import { HerderActivity } from "./HerderActivityPage";
 import { HerderContextPanel } from "./HerderContextPage";
 
-type HerderTab = "trail" | "context";
-const TAB_KEY = "agentherd.herder.tab";
+type HerderTab = "context" | "trail";
 const TABS = [
-  { value: "trail", label: "行动记录" },
   { value: "context", label: "上下文" },
+  { value: "trail", label: "行动记录" },
 ] as const;
-
-function savedTab(): HerderTab {
-  try {
-    return localStorage.getItem(TAB_KEY) === "context" ? "context" : "trail";
-  } catch {
-    return "trail";
-  }
-}
 
 export function HerdersPage() {
   const herder = useApp((s) => s.status?.herder);
   const setPage = useApp((s) => s.setPage);
-  const [tab, setTab] = useState<HerderTab>(savedTab);
-  const choose = (next: HerderTab) => {
-    setTab(next);
-    try {
-      localStorage.setItem(TAB_KEY, next);
-    } catch {
-      // A page without storage just forgets the tab.
-    }
-  };
+  const [tab, setTab] = useState<HerderTab>("context");
   return (
     <div className="flex flex-col gap-4">
       {herder !== undefined && !herder.on && (
@@ -48,8 +31,8 @@ export function HerdersPage() {
           </Button>
         </div>
       )}
-      <Segmented label="主管页" options={TABS} value={tab} onChange={choose} />
-      {tab === "trail" ? <HerderActivity /> : <HerderContextPanel />}
+      <Segmented label="主管页" options={TABS} value={tab} onChange={setTab} />
+      {tab === "context" ? <HerderContextPanel /> : <HerderActivity />}
     </div>
   );
 }

@@ -188,6 +188,14 @@ describe("Host", () => {
       figure: "claude",
     });
     expect(readConfig(t.home).pet).toMatchObject({ on: false, figure: "claude" });
+    // The Herder's working window (ADR 0097).
+    expect(t.host.status().herderWindow).toBe(128_000);
+    expect(t.host.updateSettings({ herderWindow: 256_000 }).herderWindow).toBe(256_000);
+    expect(readConfig(t.home).herderWindow).toBe(256_000);
+    expect(t.host.updateSettings({ herderWindow: 0 }).herderWindow).toBe(0);
+    expect(() => t.host.updateSettings({ herderWindow: 100 })).toThrow(
+      "herderWindow must be one of 64000, 128000, 256000, 0",
+    );
     expect(() => t.host.updateSettings({ pet: { figure: "cat" as never } })).toThrow(
       /deepseek, claude, frieren/,
     );

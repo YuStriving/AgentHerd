@@ -5,7 +5,7 @@ import { type CompressionState, defaultCountTokens } from "@agentherd/context-ke
 import { countTokens, type HerderFoldRecord } from "@agentherd/core";
 import type { AgentMessage } from "@agentherd/herder-loop";
 import { describe, expect, it } from "vitest";
-import { HerderContext, promptOf, withoutContextMarks } from "../src/context.ts";
+import { HerderContext, promptOf, withoutContextMarks, workingWindow } from "../src/context.ts";
 
 const usage = {
   input: 0,
@@ -368,5 +368,37 @@ describe("folds as rows of their own (ADR 0095)", () => {
     expect(a?.hash).toMatch(/^[0-9a-f]{16}$/);
     expect(promptOf([{ ...SYSTEM, content: "other" } as AgentMessage])?.hash).not.toBe(a?.hash);
     expect(promptOf([owner("no system")])).toBeUndefined();
+  });
+});
+
+describe("the working window (ADR 0097)", () => {
+  it("is the owner's pick, never more than the model's, 128K by default", () => {
+    expect(workingWindow(1_000_000)).toBe(128_000);
+    expect(workingWindow(1_000_000, 256_000)).toBe(256_000);
+    expect(workingWindow(1_000_000, 0)).toBe(1_000_000);
+    expect(workingWindow(64_000, 256_000)).toBe(64_000);
+    // A model that does not say how much it takes gets the pick, or the default.
+    expect(workingWindow(0, 64_000)).toBe(64_000);
+    expect(workingWindow(0, 0)).toBe(128_000);
+  });
+
+  it("folds against the picked window, read on every request", () => {
+    let cap = 64_000;
+    const log = [owner("你好")];
+    const box = { messages: [SYSTEM, ...log] };
+    const context = new HerderContext(
+      {
+        contextWindow: () => 1_000_000,
+        contextCap: () => cap,
+        messages: () => box.messages,
+        audit: () => {},
+      },
+      log,
+    );
+    context.project(box.messages);
+    expect(context.snapshot).toMatchObject({ window: 64_000, foldAt: 57_600 });
+    cap = 0;
+    context.project(box.messages);
+    expect(context.snapshot).toMatchObject({ window: 1_000_000, foldAt: 900_000 });
   });
 });

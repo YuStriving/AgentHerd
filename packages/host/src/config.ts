@@ -54,6 +54,8 @@ export interface CliConfig {
   profileWaiting?: Partial<Record<string, string>>;
   /** The desktop pet (ADR 0070); DEFAULT_PET where missing. */
   pet?: Partial<import("./api.ts").PetSettings>;
+  /** The Herder's working window (ADR 0097); missing is DEFAULT_HERDER_WINDOW. */
+  herderWindow?: number;
 }
 
 export function agentherdHome(env: NodeJS.ProcessEnv = process.env): string {

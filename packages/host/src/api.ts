@@ -69,6 +69,11 @@ export interface HostStatus {
   profiles: string[];
   /** The desktop pet (ADR 0070). */
   pet: PetSettings;
+  /**
+   * The Herder's working window in tokens (ADR 0097): it folds old talk before this fills up.
+   * 0 is the model's whole window.
+   */
+  herderWindow: number;
 }
 
 /**
@@ -225,9 +230,15 @@ export interface HerderRequestView {
 /** What the next request would send, rebuilt from herd.db (ADR 0095). */
 export interface HerderContextNow {
   tokens: number;
-  /** The working window (the model's, at most 128K) and where AgentHerd folds by itself. */
+  /**
+   * The working window (the owner's pick, never more than the model's, ADR 0097) and where
+   * AgentHerd folds by itself.
+   */
   window: number;
   foldAt: number;
+  /** The owner's pick (one of HERDER_WINDOWS) and the model's own window, when known. */
+  choice: number;
+  modelWindow?: number;
   parts: HerderContextParts;
   /** Each piece, its text cut short; `herderMessages` gives the whole of a message. */
   items: (HerderContextItem & { seq?: number })[];
@@ -491,7 +502,13 @@ export interface SettingsPatch {
   /** An Obsidian vault folder; "" clears it. */
   obsidianVault?: string;
   pet?: Partial<PetSettings>;
+  /** One of HERDER_WINDOWS. */
+  herderWindow?: number;
 }
+
+/** The Herder's working windows the owner can pick (ADR 0097); 0 is the model's whole window. */
+export const HERDER_WINDOWS = [64_000, 128_000, 256_000, 0] as const;
+export const DEFAULT_HERDER_WINDOW = 128_000;
 
 /**
  * The figures that come with the app: two from llm-pet (ADR 0070) and sixteen anime figures from

@@ -14,6 +14,7 @@ import {
   HerderContext,
   measureContext,
   promptMessage,
+  workingWindow,
 } from "@agentherd/herder";
 import type {
   HerderContextNow,
@@ -234,12 +235,14 @@ function rebuild(
   store: Store,
   log: readonly Message[],
   window: number,
+  windows: { model: number; choice: number },
 ): { now: HerderContextNow; folds: HerderFoldRecord[]; shownCalls: Set<string> } {
   const saved = store.herderFolds();
   const prompt = store.herder.prompt();
   const messages = prompt === undefined ? [...log] : [promptMessage(prompt) as Message, ...log];
   const context = new HerderContext(
-    { contextWindow: () => window, messages: () => messages, audit: () => {} },
+    // The working window is worked out already; 0 lets the context use all of it.
+    { contextWindow: () => window, contextCap: () => 0, messages: () => messages, audit: () => {} },
     log as Message[],
     store.getState<Saved>(CONTEXT_STATE_KEY),
     saved,
@@ -250,6 +253,8 @@ function rebuild(
     tokens: measured.tokens,
     window: measured.window,
     foldAt: measured.foldAt,
+    choice: windows.choice,
+    ...(windows.model > 0 ? { modelWindow: windows.model } : {}),
     parts: measured.parts,
     items: measured.items.map((i) => ({
       ...i,
@@ -267,18 +272,24 @@ function rebuild(
 }
 
 /** Everything on the tab; `problem` says why the next request could not be rebuilt. */
-export function herderContextView(store: Store, on: boolean, key: string): HerderContextView {
+export function herderContextView(
+  store: Store,
+  on: boolean,
+  key: string,
+  windows: { model: number; choice: number } = { model: 0, choice: CONTEXT_WINDOW_MAX },
+): HerderContextView {
   const rows = store.herder.messages();
   const requests = store.herderRequests("", CONTEXT_REQUESTS_SHOWN);
   const last = requests.at(-1);
-  const window = Math.min(last?.window ?? CONTEXT_WINDOW_MAX, CONTEXT_WINDOW_MAX);
+  // The owner's pick, never more than the model's own window (ADR 0097).
+  const window = workingWindow(windows.model, windows.choice);
   const savedIds = new Set(store.herderFolds().map((f) => f.blockId));
   let now: HerderContextNow | undefined;
   let folds = store.herderFolds();
   let problem: string | undefined;
   let shownCalls: Set<string> | undefined;
   try {
-    const built = rebuild(store, store.herderLog() as Message[], window);
+    const built = rebuild(store, store.herderLog() as Message[], window, windows);
     now = built.now;
     folds = built.folds;
     shownCalls = built.shownCalls;

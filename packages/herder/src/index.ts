@@ -20,6 +20,7 @@ export {
 } from "./agent-models.ts";
 export {
   CONTEXT_STATE_KEY,
+  CONTEXT_WINDOW_CHOICES,
   CONTEXT_WINDOW_MAX,
   type ContextHooks,
   FORCED_FOLD_AT,
@@ -28,6 +29,7 @@ export {
   measureContext,
   promptMessage,
   withoutContextMarks,
+  workingWindow,
 } from "./context.ts";
 export {
   Herder,

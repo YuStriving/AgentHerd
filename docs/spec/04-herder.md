@@ -147,7 +147,9 @@ later task gets and which counts as the owner allowing that step.
   [ADR 0073](../adr/0073-the-pets-conversation-looks-like-a-chat.md)), and parts the Herder folded
   with `compress` show as its summary. Summaries
   keep unresolved owner instructions verbatim; `search_context` and `decompress` bring folded parts
-  back. The window is the model's, at most 128,000 tokens. At 90 % of it AgentHerd folds the oldest
+  back. The working window is the owner's pick on the 上下文 tab (64K, 128K by default, 256K or the
+  model's whole window), never more than the model's own
+  ([ADR 0097](../adr/0097-the-owner-picks-the-herders-working-window.md)). At 90 % of it AgentHerd folds the oldest
   whole turns itself (never the current one); a "context too long" error folds about half and
   retries once
   ([ADR 0045](../adr/0045-herder-context-folded-by-the-model.md)). Each fold is a row of

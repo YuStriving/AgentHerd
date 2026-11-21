@@ -18,6 +18,8 @@ import {
   spanOf,
   summaryWhere,
   timeOf,
+  WINDOW_OPTIONS,
+  windowLine,
 } from "../src/renderer/src/herder-context.ts";
 
 describe("the 上下文 tab (ADR 0093)", () => {
@@ -170,5 +172,17 @@ describe("folds, the map and the tree (ADR 0095)", () => {
     expect(messageLine({ role: "toolResult", kind: "result", tool: "web_read", text: "abc" })).toBe(
       "web_read 返回 3 字",
     );
+  });
+});
+
+describe("the working window (ADR 0097)", () => {
+  it("says the window the Herder works in and the model's when bigger", () => {
+    expect(windowLine({ window: 128_000, modelWindow: 1_000_000 })).toBe("128k（模型最多 1M）");
+    expect(windowLine({ window: 1_000_000, modelWindow: 1_000_000 })).toBe("1M");
+    expect(windowLine({ window: 64_000 })).toBe("64k");
+    expect(windowLine({ window: 131_072, modelWindow: 1_048_576 })).toBe("131k（模型最多 1.05M）");
+    expect(WINDOW_OPTIONS.map((o) => o.label)).toEqual(["64k", "128k", "256k", "用满模型"]);
+    const view = sampleHerderContext(256_000);
+    expect(view.now).toMatchObject({ window: 256_000, choice: 256_000, foldAt: 230_400 });
   });
 });

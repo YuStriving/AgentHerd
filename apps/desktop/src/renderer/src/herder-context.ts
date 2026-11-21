@@ -63,6 +63,28 @@ export const INPUT_COLOR = "#5b8def";
 export const FOLD_COLOR = PART_COLORS.folds;
 
 /** 812 → "812", 19_400 → "19.4k", 1_250_000 → "1.25M". */
+/** The working windows the owner can pick (ADR 0097); "0" is the model's whole window. */
+export const WINDOW_OPTIONS = [
+  { value: "64000", label: "64k" },
+  { value: "128000", label: "128k" },
+  { value: "256000", label: "256k" },
+  { value: "0", label: "用满模型" },
+] as const;
+
+/** 「128k（模型最多 1M）」: the window the Herder works in, and the model's when bigger. */
+export function windowLine(now: { window: number; modelWindow?: number }): string {
+  const model = now.modelWindow ?? 0;
+  const more = model > now.window ? `（模型最多 ${roundTokens(model)}）` : "";
+  return `${roundTokens(now.window)}${more}`;
+}
+
+/** 64k, 1M: a window size, which is a round number. */
+function roundTokens(n: number): string {
+  if (n % 1_000_000 === 0) return `${n / 1_000_000}M`;
+  if (n % 1000 === 0) return `${n / 1000}k`;
+  return formatTokens(n);
+}
+
 export function formatTokens(n: number): string {
   if (n < 1000) return String(Math.round(n));
   if (n < 1_000_000) {
