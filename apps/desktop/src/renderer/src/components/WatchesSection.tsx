@@ -1,19 +1,12 @@
-// 定时任务 › 在盯的 (ADR 0058): everything AgentHerd watches for the owner — pull requests, mail, new
-// GitHub work and platform notices. The Herder adds them in chat; here the owner can pause one or
-// remove it. Platform watches are switched in 应用连接 › 账号, so they cannot be removed here.
+// 信箱 › 任务开的 PR (ADR 0058, 0100): the pull requests tasks opened, which AgentHerd keeps an eye
+// on for CI, reviews and merging. They belong to their tasks; the owner can pause or drop one here.
+// Everything else the owner asked to hear about is a mailbox source above.
 
 import type { WatchView } from "@agentherd/host/api";
-import { Eye, Loader2, Trash2 } from "lucide-react";
-import { useState } from "react";
-import { call, useApp } from "../store";
-import { Badge, Button, EmptyState, Group, Section, Switch } from "./ui";
-
-const KIND: Record<WatchView["kind"], string> = {
-  pr: "PR",
-  mail: "邮件",
-  intake: "GitHub 新工作",
-  social: "平台",
-};
+import { GitPullRequest, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { call } from "../store";
+import { Badge, Button, Group, Section, Switch } from "./ui";
 
 /** 「刚刚」「5 分钟前」「3 小时前」「2 天前」, or 「11月3日」 when older than a week. */
 export function ago(iso: string, now = Date.now()): string {
@@ -30,13 +23,13 @@ export function ago(iso: string, now = Date.now()): string {
   return `${at.getMonth() + 1}月${at.getDate()}日`;
 }
 
-function WatchRow({ watch }: { watch: WatchView }) {
+function WatchRow({ watch, onList }: { watch: WatchView; onList: (w: WatchView[]) => void }) {
   const [busy, setBusy] = useState(false);
   const apply = async (action: () => Promise<WatchView[] | undefined>) => {
     setBusy(true);
     const next = await action();
     setBusy(false);
-    if (next !== undefined) useApp.setState({ watches: next });
+    if (next !== undefined) onList(next);
   };
   const remove = () => {
     if (!window.confirm(`不再盯着「${watch.title}」？`)) return;
@@ -44,12 +37,12 @@ function WatchRow({ watch }: { watch: WatchView }) {
   };
   return (
     <div className="flex items-center gap-3 px-4 py-2.5">
+      <GitPullRequest size={14} className="shrink-0 text-ink-dim" />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate font-medium text-ink text-md" title={watch.title}>
             {watch.title}
           </span>
-          <Badge tone={watch.kind === "social" ? "blue" : "gray"}>{KIND[watch.kind]}</Badge>
           {watch.paused && <Badge tone="amber">已暂停</Badge>}
         </div>
         <div className="truncate text-ink-muted text-sm">
@@ -63,33 +56,26 @@ function WatchRow({ watch }: { watch: WatchView }) {
         disabled={busy}
         onChange={(on) => void apply(() => call((h) => h.setWatchPaused(watch.id, !on)))}
       />
-      {watch.removable ? (
-        <Button variant="ghost" size="sm" aria-label="删除" disabled={busy} onClick={remove}>
-          <Trash2 size={13} />
-        </Button>
-      ) : (
-        // Keeps the switches in one column when a row has no delete button.
-        <span className="w-[29px] shrink-0" aria-hidden />
-      )}
+      <Button variant="ghost" size="sm" aria-label="删除" disabled={busy} onClick={remove}>
+        <Trash2 size={13} />
+      </Button>
     </div>
   );
 }
 
-export function WatchesSection() {
-  const watches = useApp((s) => s.watches);
+/** The tasks' pull requests; nothing is shown while there are none. */
+export function PrWatches() {
+  const [watches, setWatches] = useState<WatchView[] | undefined>();
+  useEffect(() => {
+    void call((h) => h.watches()).then((w) => w !== undefined && setWatches(w));
+  }, []);
+  if (watches === undefined || watches.length === 0) return null;
   return (
-    <Section title="在盯的" hint="跟主管说「帮我盯着…」就会加进来，说一句也能暂停">
+    <Section title="任务开的 PR" hint="任务开的 PR 有 CI、评审和合并的动静会自己告诉你">
       <Group>
-        {watches === undefined ? (
-          <div className="flex items-center gap-2 px-4 py-3 text-ink-muted text-md">
-            <Loader2 size={14} className="animate-spin" />
-            正在加载…
-          </div>
-        ) : watches.length === 0 ? (
-          <EmptyState icon={<Eye size={18} />} text="还没有在盯的东西" />
-        ) : (
-          watches.map((w) => <WatchRow key={w.id} watch={w} />)
-        )}
+        {watches.map((w) => (
+          <WatchRow key={w.id} watch={w} onList={setWatches} />
+        ))}
       </Group>
     </Section>
   );

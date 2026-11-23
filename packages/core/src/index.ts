@@ -83,18 +83,51 @@ export {
 } from "./herder-store.ts";
 export type { Answerable, InboxOptions, OwnerAnswer } from "./inbox.ts";
 export { BODY_MAX_LINES, DEFAULT_REMIND_MINUTES, Inbox, itemBody, itemView } from "./inbox.ts";
-export type { IntakeItem, IntakeKind, IntakeOptions, IntakeRequest } from "./intake.ts";
+export type { IntakeItem, IntakeKind, IntakeSearch } from "./intake.ts";
+export { itemLine, searchArgs, searchItems } from "./intake.ts";
+export type { MailMessage } from "./mail-watch.ts";
+export { fetchMail, searchSince } from "./mail-watch.ts";
 export {
-  INTAKE_POLL_MINUTES,
-  INTAKE_TARGET,
-  INTAKE_WATCHES_MAX,
-  Intake,
-  itemLine,
-  searchArgs,
-  searchItems,
-} from "./intake.ts";
-export type { MailMessage, MailWatchOptions } from "./mail-watch.ts";
-export { fetchMail, MAIL_POLL_MINUTES, MAIL_WATCHES_MAX, MailWatches } from "./mail-watch.ts";
+  type CheckResult,
+  cleanLetters,
+  DIGEST_HOUR,
+  LETTER_BODY_MAX,
+  LETTER_FATES,
+  LETTER_TITLE_MAX,
+  LETTERS_PER_DELIVERY,
+  LETTERS_PER_LOOK,
+  type Letter,
+  type LetterDelivery,
+  type LetterFate,
+  type LetterGroup,
+  letterLine,
+  MAILBOX_ACTS,
+  MAILBOX_EVERY_DEFAULT,
+  MAILBOX_EVERY_MIN,
+  MAILBOX_FAILS_TOLD,
+  MAILBOX_KINDS,
+  MAILBOX_SOURCES_MAX,
+  MAILBOX_STATE_MAX,
+  MAILBOX_TARGET,
+  Mailbox,
+  type MailboxAct,
+  type MailboxCheck,
+  type MailboxKind,
+  type MailboxOptions,
+  type MailboxPatch,
+  type MailboxSource,
+  type MailboxSourceInput,
+  SOCIAL_JITTER_MINUTES,
+  type StoredLetter,
+  timerWhen,
+} from "./mailbox.ts";
+export {
+  LETTERS_KEEP,
+  type LetterOffer,
+  MailboxStore,
+  moveWatchesIntoMailbox,
+  SEEN_KEEP,
+} from "./mailbox-store.ts";
 export type {
   AppToolInfo,
   AppTools,
@@ -199,40 +232,20 @@ export {
   reportView,
   summaryPrompt,
 } from "./report.ts";
-export type { Schedule, ScheduleInput, SchedulePatch, ScheduleWhen } from "./schedules.ts";
-export {
-  checkWhen,
-  describeWhen,
-  EVERY_HOURS_MAX,
-  EVERY_HOURS_MIN,
-  nextRun,
-  SCHEDULE_TICK_MS,
-  SCHEDULES_MAX,
-  Schedules,
-} from "./schedules.ts";
-export type {
-  SocialKind,
-  SocialNotice,
-  SocialPlatform,
-  SocialSource,
-  SocialWatchOptions,
-} from "./social-watch.ts";
+export type { Schedule, ScheduleWhen } from "./schedules.ts";
+export { checkWhen, describeWhen, EVERY_HOURS_MAX, EVERY_HOURS_MIN, nextRun } from "./schedules.ts";
+export type { SocialKind, SocialNotice, SocialPlatform, SocialSource } from "./social-watch.ts";
 export {
   DEFAULT_SOCIAL_WATCH,
-  SOCIAL_JITTER_MINUTES,
   SOCIAL_KINDS,
   SOCIAL_PLATFORMS,
   SOCIAL_POLL_MINUTES,
-  SocialWatches,
 } from "./social-watch.ts";
 export type { SourceId, SourceState } from "./source-health.ts";
 export { SOURCE_DOWN_MINUTES, SourceHealth, sourceHint } from "./source-health.ts";
 export type {
   AuditRow,
   DecisionRow,
-  IntakeOffer,
-  IntakeWatch,
-  MailWatch,
   PrWatch,
   SessionRow,
   StoredItem,

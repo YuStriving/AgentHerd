@@ -1,6 +1,6 @@
 # 0090. Memory jobs use a model that answers, and reviews catch up
 
-- Status: Accepted
+- Status: Accepted; changed by [0101](0101-memory-comes-with-each-turn.md) (reviews by tokens, 80 lines or 24,000 characters at a time)
 - Date: 2026-11-20
 - Changes: [0038](0038-herder-memory.md) (which model memory jobs use, how reviews read)
 

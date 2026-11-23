@@ -3,7 +3,7 @@
 // Nothing new is recorded for this; the conversation already holds all of it.
 
 import { withoutContextMarks } from "./context.ts";
-import { OWNER_LABEL, QUIET } from "./prompt.ts";
+import { OWNER_LABEL, quietReply } from "./prompt.ts";
 
 /** What started a turn. */
 export type ActivityTrigger =
@@ -224,7 +224,7 @@ export function activityTurns(log: readonly unknown[]): ActivityTurn[] {
       }
       const text = withoutContextMarks(textOf(m.content)).trim();
       if (text !== "") {
-        turn.quiet = text.includes(QUIET);
+        turn.quiet = quietReply(text);
         turn.reply = turn.quiet ? "" : text;
       }
     } else if (m.role === "toolResult") {

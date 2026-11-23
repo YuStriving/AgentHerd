@@ -1420,3 +1420,70 @@ body {
   font-size: 13px;
   cursor: pointer;
 }
+
+.pet-stage > button.pet-badge {
+  pointer-events: auto;
+  border: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+.pet-stage[data-docked="left"] .pet-badge {
+  left: 0;
+  right: auto;
+}
+.pet-stage[data-grip] > :not(.pet-figure, .pet-dots, .pet-badge) {
+  visibility: hidden;
+}
+.pet-stage[data-grip] .pet-figure {
+  position: absolute;
+  bottom: 0;
+  background-image: none;
+  animation: none;
+  transform: none;
+  filter: none;
+}
+.pet-stage[data-grip="right"] .pet-figure {
+  --slide: -36px;
+}
+/* Every grip is drawn for the right edge; at the left edge the box is mirrored in place. */
+.pet-stage[data-grip="left"] .pet-figure {
+  --slide: 36px;
+  scale: -1 1;
+}
+.pet-stage[data-grip] .pet-figure[data-art="pose"] {
+  width: 56px;
+  height: 100px;
+}
+.pet-stage[data-grip="right"] .pet-figure[data-art="pose"] {
+  right: -8px;
+}
+.pet-stage[data-grip="left"] .pet-figure[data-art="pose"] {
+  left: -8px;
+}
+/* The resting frame of a figure without its own grip picture, leaned about the edge corner. */
+.pet-grip-frame {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  transform-origin: 100% 100%;
+}
+.pet-grip-frame > img {
+  display: block;
+  max-width: none;
+}
+.pet-figure[data-art="pose"] > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.pet-stage[data-enter] .pet-figure {
+  animation: pet-edge-enter 300ms ease-out both;
+}
+@keyframes pet-edge-enter {
+  from {
+    translate: var(--slide) 0;
+  }
+  to {
+    translate: 0 0;
+  }
+}

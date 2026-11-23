@@ -31,6 +31,7 @@ import type {
   HostStatus,
   LarkView,
   LoginView,
+  MailboxView,
   MemoryView,
   ModelsView,
   ModelTiersView,
@@ -40,11 +41,11 @@ import type {
   PluginPreview,
   PluginView,
   RemoteHost,
-  SchedulesView,
   SetupState,
   SocialView,
   Tier,
   WatchView,
+  WecomView,
   WestockTest,
   WestockView,
 } from "@agentherd/host/api";
@@ -53,7 +54,6 @@ import { HERD_UI_TARGET, herdUiChoices, herdUiFence } from "@agentherd/protocol/
 import type { Bridge } from "../../shared/bridge";
 import type { Theme } from "../../shared/theme";
 import {
-  hoursFromNow,
   PLACEHOLDER_QR,
   providers,
   SAMPLE_SUBSCRIPTIONS,
@@ -62,8 +62,8 @@ import {
   sampleHerderContext,
   sampleHerderMessages,
   sampleLark,
+  sampleMailbox,
   sampleMemory,
-  sampleSchedules,
   sampleServices,
   sampleSocials,
   sampleTasks,
@@ -423,7 +423,6 @@ function installFakeBridge(): void {
 
   let setup: SetupState = { phase: "idle" };
   let memory: MemoryView = sampleMemory();
-  let schedules: SchedulesView = sampleSchedules(sim === "empty" || sim === "no-agent");
   let apps: AppsView =
     sim === "ready"
       ? {
@@ -446,6 +445,14 @@ function installFakeBridge(): void {
   );
   let watches: WatchView[] = sampleWatches(sim === "empty" || sim === "no-agent");
   let lark: LarkView = sampleLark(sim === "empty" || sim === "no-agent");
+  const wecomDisconnected: WecomView = { state: "disconnected", capabilities: [] };
+  let wecom = wecomDisconnected;
+  let wecomTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearWecom = () => {
+    clearTimeout(wecomTimer);
+    wecom = wecomDisconnected;
+    return delay(wecom);
+  };
   let feeds: FeedView[] = sampleFeeds();
   let westock: WestockView = {
     enabled: true,
@@ -515,6 +522,12 @@ function installFakeBridge(): void {
       installed: false,
     },
   ];
+  let mailbox: MailboxView = sampleMailbox(sim === "empty" || sim === "no-agent");
+  const setMailbox = (next: MailboxView): Promise<MailboxView> => {
+    mailbox = next;
+    emit({ topic: "mailbox", data: structuredClone(mailbox) });
+    return delay(structuredClone(mailbox));
+  };
   let plugins: PluginView[] = [
     {
       id: "context7",
@@ -752,6 +765,26 @@ function installFakeBridge(): void {
       lark = { state: "signed-out", version: "1.4.0" };
       return delay(lark);
     },
+    wecom: () => delay(wecom),
+    startWecomLogin: () => {
+      if (wecom.state === "connecting" || wecom.state === "connected") return delay(wecom);
+      wecom = { state: "connecting", qr: PLACEHOLDER_QR, capabilities: [] };
+      wecomTimer = setTimeout(() => {
+        wecom =
+          failing === "wecom"
+            ? { state: "failed", capabilities: [] }
+            : {
+                state: "connected",
+                capabilities: [
+                  { id: "doc", name: "文档", toolCount: 3 },
+                  { id: "calendar", name: "日程", toolCount: 3 },
+                ],
+              };
+      }, 4000);
+      return delay(wecom);
+    },
+    cancelWecomLogin: () => (wecom.state === "connecting" ? clearWecom() : delay(wecom)),
+    disconnectWecom: clearWecom,
     pet: () => delay(pet),
     petSay: (text, paths = []) => {
       if (!pet.connected)
@@ -866,6 +899,115 @@ function installFakeBridge(): void {
       });
     },
     danjuan: () => delay(structuredClone(danjuan)),
+    mailbox: () => delay(structuredClone(mailbox)),
+    mailboxAdd: (draft) =>
+      setMailbox({
+        ...mailbox,
+        sources: [
+          ...mailbox.sources,
+          {
+            id: `m-${Date.now()}`,
+            kind: draft.kind,
+            name: draft.name,
+            note: draft.note ?? "",
+            config: {
+              ...(draft.repo === undefined ? {} : { repo: draft.repo }),
+              ...(draft.what === undefined ? {} : { what: draft.what }),
+              ...(draft.url === undefined ? {} : { url: draft.url }),
+              ...(draft.words === undefined ? {} : { words: draft.words }),
+              ...(draft.command === undefined ? {} : { command: draft.command }),
+              ...(draft.query === undefined ? {} : { query: draft.query }),
+              ...(draft.platform === undefined ? {} : { platform: draft.platform }),
+              ...(draft.label === undefined ? {} : { label: draft.label }),
+              ...(draft.when === undefined ? {} : { when: draft.when }),
+            },
+            everyMinutes:
+              draft.kind === "timer"
+                ? 0
+                : (draft.everyMinutes ?? mailbox.every[draft.kind].default),
+            act:
+              draft.kind === "timer"
+                ? "sort"
+                : draft.act === "auto"
+                  ? "trial"
+                  : (draft.act ?? "sort"),
+            trials: 0,
+            ...(draft.kind === "timer"
+              ? { nextAt: new Date(Date.now() + 3600_000).toISOString() }
+              : {}),
+            paused: false,
+            by: "owner",
+            createdAt: new Date().toISOString(),
+            started: draft.kind === "timer",
+            fails: 0,
+            letters: 0,
+          },
+        ],
+      }),
+    mailboxSet: (id, patch) =>
+      setMailbox({
+        ...mailbox,
+        sources: mailbox.sources.map((s) =>
+          s.id === id
+            ? {
+                ...s,
+                ...(patch.paused === undefined ? {} : { paused: patch.paused }),
+                ...(patch.name === undefined ? {} : { name: patch.name }),
+                ...(patch.note === undefined ? {} : { note: patch.note }),
+                ...(patch.everyMinutes === undefined ? {} : { everyMinutes: patch.everyMinutes }),
+                ...(patch.act === undefined
+                  ? {}
+                  : { act: patch.act === "auto" ? ("trial" as const) : patch.act }),
+                ...(patch.fields === undefined
+                  ? {}
+                  : {
+                      config: Object.fromEntries(
+                        Object.entries(patch.fields).filter(([, v]) => v !== undefined),
+                      ),
+                      ...(s.kind === "timer" ? {} : { started: false, fails: 0 }),
+                    }),
+              }
+            : s,
+        ),
+      }),
+    mailboxRemove: (id) =>
+      setMailbox({
+        ...mailbox,
+        sources: mailbox.sources.filter((s) => s.id !== id),
+        letters: mailbox.letters.filter((l) => l.sourceId !== id),
+      }),
+    mailboxRun: async (id) => {
+      await new Promise((r) => setTimeout(r, 700));
+      return setMailbox({
+        ...mailbox,
+        sources: mailbox.sources.map((s) =>
+          s.id === id
+            ? {
+                ...s,
+                lastRunAt: new Date().toISOString(),
+                lastError: undefined,
+                fails: 0,
+                started: true,
+              }
+            : s,
+        ),
+      });
+    },
+    mailboxTry: async (draft) => {
+      await new Promise((r) => setTimeout(r, 700));
+      if (draft.kind === "timer") {
+        const next = new Date(Date.now() + 3600_000).toISOString();
+        return [{ id: "next", title: draft.name, body: `daily; next ${next}` }];
+      }
+      if (draft.kind === "github") {
+        return [
+          { id: "issue:7012", title: "#7012 Crash on macOS 26 when resuming a session" },
+          { id: "issue:7011", title: "#7011 Support for custom MCP timeouts" },
+          { id: "release:1", title: "发布 rust-v0.72.0" },
+        ];
+      }
+      return [];
+    },
     pluginCatalog: () => delay(structuredClone(pluginCatalog)),
     plugins: () => delay(structuredClone(plugins)),
     previewPlugin: async (source) => {
@@ -1114,22 +1256,6 @@ function installFakeBridge(): void {
         `${blockId} 原文\n\n[Owner's message]\n帮我看看别人的搜索方案\n\n主管：Codex 和 Claude Code 都只有一个 web_search……`,
       ),
     memories: () => delay(memory),
-    schedules: () => delay(schedules),
-    setSchedulePaused: (id, paused) => {
-      schedules = {
-        ...schedules,
-        schedules: schedules.schedules.map((s) => {
-          if (s.id !== id) return s;
-          const { nextAt: _, ...rest } = s;
-          return paused ? { ...rest, paused } : { ...rest, paused, nextAt: hoursFromNow(20) };
-        }),
-      };
-      return delay(schedules);
-    },
-    removeSchedule: (id) => {
-      schedules = { ...schedules, schedules: schedules.schedules.filter((s) => s.id !== id) };
-      return delay(schedules);
-    },
     editMemory: (id, text) => {
       memory = {
         ...memory,

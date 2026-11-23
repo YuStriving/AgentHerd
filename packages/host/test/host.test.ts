@@ -152,6 +152,94 @@ describe("Host", () => {
     });
   });
 
+  it("connects multiple WeCom office services through one scan without changing the channel", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ah-"));
+    writeConfig(home, { channel: { channelId: "fake", ownerId: "owner", data: {} } });
+    const secrets = memorySecrets();
+    let signedIn = false;
+    let scans = 0;
+    let finish = () => {};
+    const scanned = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const host = new Host({
+      home,
+      secrets,
+      env: {},
+      profiles: () => [],
+      createChannel: () => new FakeChannel(),
+      mcpSocket: socketPath(home),
+      wecomCli: {
+        status: async () => signedIn,
+        login: async (qr) => {
+          scans++;
+          qr("data:image/png;base64,ZmFrZQ==");
+          await scanned;
+          signedIn = true;
+        },
+        logout: async () => {
+          signedIn = false;
+        },
+        run: async (args) => {
+          if (args[1] === "list") {
+            return Object.entries({
+              calendar: "calendar.schedules.list",
+              meeting: "meeting.list",
+              todo: "todo.list",
+            }).map(([name, method]) => ({
+              name,
+              methods: [{ name: method, description: "List items" }],
+            }));
+          }
+          return {
+            method: args[2],
+            request: { type: "object", properties: {} },
+            schemas: {},
+            response: {},
+          };
+        },
+      },
+    });
+    cleanups.push(() => host.stop());
+    const server = await serveApi(host, socketPath(home));
+    cleanups.push(() => server.close());
+    const client = await connectHost(socketPath(home));
+    cleanups.push(async () => client.close());
+    await host.start();
+    let port: HerderHost | undefined;
+    const herd = (host as unknown as { herd: Herd }).herd;
+    await herd.setHerder((h) => {
+      port = h;
+      return {
+        ownerMessage: () => {},
+        ownerAnswer: () => {},
+        event: () => {},
+        stop: async () => {},
+      };
+    });
+    expect(port?.apps?.()).not.toContain("企业微信");
+    expect(await client.host.wecom()).toEqual({ state: "disconnected", capabilities: [] });
+    await client.host.startWecomLogin();
+    expect(await client.host.wecom()).toMatchObject({
+      state: "connecting",
+      qr: "data:image/png;base64,ZmFrZQ==",
+    });
+    finish();
+    await expect.poll(async () => (await client.host.wecom()).state).toBe("connected");
+    const view = await client.host.wecom();
+    expect(view.capabilities.map(({ id }) => id).sort()).toEqual(["calendar", "meeting", "todo"]);
+    expect(scans).toBe(1);
+    expect(port?.apps?.()).toContain("企业微信");
+    expect(view.qr).toBeUndefined();
+    expect(readFileSync(join(home, "config.json"), "utf8")).not.toContain("data:image");
+    expect(readConfig(home).channel?.channelId).toBe("fake");
+    expect(await client.host.disconnectWecom()).toEqual({
+      state: "disconnected",
+      capabilities: [],
+    });
+    expect(port?.apps?.()).not.toContain("企业微信");
+  });
+
   it("reconnects the channel on request", async () => {
     const t = makeHost(true);
     await t.host.start();
@@ -312,34 +400,62 @@ describe("Host", () => {
     );
   }, 20_000);
 
-  it("shows the Herder's schedules and lets the owner pause and remove them (ADR 0055)", async () => {
+  it("timers and GitHub work live in the 信箱; a timer shows when it runs next (ADR 0100)", async () => {
     const off = makeHost(false);
     await off.host.start();
-    expect(off.host.schedules()).toEqual({ schedules: [], ready: false });
-    expect(() => off.host.setSchedulePaused("x", true)).toThrow(/not running/);
+    expect(off.host.mailbox().on).toBe(false);
+    await expect(
+      off.host.mailboxAdd({
+        kind: "timer",
+        name: "看新 issue",
+        note: "看看 PI-Desktop 有没有新 issue",
+        when: { kind: "daily", at: "09:00" },
+      }),
+    ).rejects.toThrow(/not running/);
 
     const t = makeHost(true);
     await t.host.start();
-    expect(t.host.schedules()).toEqual({ schedules: [], ready: true });
-    // Schedules are made in chat by the Herder; here the test adds one the same way.
-    const herd = (t.host as unknown as { herd: Herd }).herd;
-    const made = herd.schedules.add({
-      about: "看新 issue",
-      prompt: "看看 PI-Desktop 有没有新 issue",
+    const view = await t.host.mailboxAdd({
+      kind: "timer",
+      name: "看新 issue",
+      note: "看看 PI-Desktop 有没有新 issue，没有就不用说",
       when: { kind: "daily", at: "09:00", days: [1, 2, 3, 4, 5] },
     });
-    expect(t.host.schedules().schedules).toMatchObject([{ id: made.id, paused: false }]);
-
-    const paused = t.host.setSchedulePaused(made.id, true).schedules[0];
+    const timer = view.sources[0];
+    expect(timer).toMatchObject({ kind: "timer", everyMinutes: 0, paused: false, by: "owner" });
+    expect(timer?.nextAt).toBeDefined();
+    const paused = (await t.host.mailboxSet(timer?.id ?? "", { paused: true })).sources[0];
     expect(paused?.paused).toBe(true);
     expect(paused?.nextAt).toBeUndefined();
-    const resumed = t.host.setSchedulePaused(made.id, false).schedules[0];
-    expect(resumed?.paused).toBe(false);
+    const resumed = (await t.host.mailboxSet(timer?.id ?? "", { paused: false })).sources[0];
     expect(resumed?.nextAt).toBeDefined();
+    await expect(
+      t.host.mailboxAdd({ kind: "timer", name: "x", note: "y", when: { kind: "every", hours: 0 } }),
+    ).rejects.toThrow();
 
-    expect(t.host.removeSchedule(made.id).schedules).toEqual([]);
-    expect(() => t.host.removeSchedule(made.id)).toThrow(/no such schedule/);
-    expect(() => t.host.setSchedulePaused(made.id, true)).toThrow(/no such schedule/);
+    // GitHub work is offered by default; turning it automatic starts a trial run.
+    const work = (
+      await t.host.mailboxAdd({
+        kind: "work",
+        name: "acme 的 bug",
+        note: "指派给我的",
+        what: ["assigned"],
+        repo: "acme/app",
+      })
+    ).sources.find((s) => s.kind === "work");
+    expect(work).toMatchObject({ act: "offer", config: { what: ["assigned"], repo: "acme/app" } });
+    const auto = (await t.host.mailboxSet(work?.id ?? "", { act: "auto" })).sources.find(
+      (s) => s.kind === "work",
+    );
+    expect(auto?.act).toBe("trial");
+    const free = (await t.host.mailboxSet(work?.id ?? "", { trial: false })).sources.find(
+      (s) => s.kind === "work",
+    );
+    expect(free?.act).toBe("auto");
+
+    expect((await t.host.mailboxRemove(timer?.id ?? "")).sources).toHaveLength(1);
+    // Only pull requests tasks opened are watches now.
+    expect(t.host.watches()).toEqual([]);
   });
 
   it("shows what the Herder did, newest turn first, with its errors", async () => {

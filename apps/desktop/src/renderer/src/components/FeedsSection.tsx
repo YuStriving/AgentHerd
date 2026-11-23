@@ -26,7 +26,7 @@ export function FeedsSection() {
     if (next !== undefined) useApp.setState({ feeds: next });
   };
   return (
-    <Section title="资讯" hint="不用登录。主管和 Agent 都能读，可以配定时任务每天推给你">
+    <Section title="资讯" hint="不用登录。主管和 Agent 都能读，可以在信箱里加个定时每天推给你">
       <Group>
         {feeds === undefined ? (
           <div className="flex items-center gap-2 px-4 py-3 text-ink-muted text-md">

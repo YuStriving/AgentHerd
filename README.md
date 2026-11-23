@@ -52,13 +52,18 @@ English · [简体中文](README.zh-CN.md)
 - **Plugins.** Install Claude Code plugins and Gemini CLI extensions from the official library or a
   GitHub link. You see what they run first; tasks get their tools and skills, tools that change
   things ask you, and the Herder uses a plugin only if you switch it on.
-- **Schedules in plain words.** "Every weekday at 9, check for new issues" — the Herder makes the
-  schedule, and missed runs happen once when your machine wakes.
+- **Timers in the mailbox.** "Every weekday at 9, check for new issues" — the Herder adds a timer to
+  the 信箱, and missed runs happen once when your machine wakes.
+- **A mailbox for the outside world.** "Keep an eye on new issues in openai/codex" — a repository,
+  an RSS feed, a Hacker News search or your own script is looked at by code on its own clock, and
+  only new things reach the Herder. It tells you what matters now, keeps the rest for a morning
+  digest, and the 信箱 page shows what it did with each letter and why.
 - **Memory that stays useful.** The whole conversation is kept, and the Herder folds old parts
   itself. It keeps a profile card of you (what to call you, what you work on, your hours and
-  likes), from things you say in passing; you see and edit it on the Memory page, and the first
-  run asks what to call you. It learns a lesson only when a task went wrong, and finds past results
-  in task records.
+  likes), from things you say in passing, and lessons from what you correct; each turn brings only
+  the memory that fits it, so the system prompt never changes and the prompt cache holds. You see
+  and edit it all on the Memory page, and the first run asks what to call you. Past results are in
+  task records.
 - **A desktop pet.** 大肥鱼 or Claude 娘 floats on your desktop (she reads while the Herder thinks, jumps when it answers and walks when you drag her), says what AgentHerd just told you
   in Feishu, cheers when a task is done, and waits with 同意 / 拒绝 when something needs you. Click
   her to talk to the Herder: replies in Markdown; tables, numbers, steps, links and choices to tap
@@ -73,8 +78,10 @@ English · [简体中文](README.zh-CN.md)
   a sheep in the menu bar shows what runs and waits, and quiet hours or a snooze keep her silent.
   ⇧⌘Space opens her to type from any app, ⇧⌘Y twice allows the oldest approval, and she can
   tuck at a screen edge or float on top only when she has something for you.
-- **Local only.** No AgentHerd server. Keys stay in `~/.agentherd/secrets.json`, readable only by
-  you. Agents can keep running with the lid closed.
+- **Local only.** No AgentHerd server. Keys and sign-ins stay in `~/.agentherd/secrets.json`
+  (`%USERPROFILE%\.agentherd\secrets.json` on Windows). On Windows, access depends on the data
+  directory's permissions. Turn on 防止休眠 to ask the system to
+  prevent idle sleep while AgentHerd is open.
 
 ## How it works
 
@@ -95,25 +102,31 @@ pnpm --filter @agentherd/desktop start
 ```
 
 The first run walks you through it: say what the Herder should call you and pick its figure
-(both can be skipped), scan a QR code to connect Feishu, add a model service and
-its key (or sign in with a ChatGPT, Claude, Copilot or other plan), pick the Herder's model. Pi and Codex come with the app; on the **Agent**
-page, press 验证 to check that one starts. In development, run
-`pnpm --filter @agentherd/desktop fetch-agents` once to put them where the dev app looks.
-`pnpm --filter @agentherd/desktop package:mac` builds `AgentHerd.app` and a `.dmg` (not signed
-yet). Then send the Herder a message in Feishu.
+(both can be skipped), scan a QR code to connect Feishu, add a model service and its key (or
+sign in with a ChatGPT, Claude, Copilot or other plan), pick the Herder's model. The packaged app includes Pi and Codex.
+When running from source, download them once with `pnpm --filter @agentherd/desktop fetch-agents`
+before using either one. On the **Agent** page, press 验证 to check that it starts.
+For UI development, `pnpm --filter @agentherd/desktop dev` enables live reload. Then send the Herder a message
+in Feishu.
+
+- **Windows:** run the same commands in PowerShell. Closing the window keeps AgentHerd connected
+  in the system tray; right-click the tray icon to quit. There is no Windows installer yet, so
+  run from source.
+- **macOS packaging:** `pnpm --filter @agentherd/desktop package:mac` builds `AgentHerd.app` and
+  an unsigned `.dmg`.
 
 <details>
 <summary>Command line, without the app</summary>
 
 ```bash
 node packages/cli/bin/agentherd.ts setup feishu                          # scan the QR code with Feishu
-node packages/cli/bin/agentherd.ts model add deepseek --models deepseek-flash   # the key is read from stdin
+node packages/cli/bin/agentherd.ts model add deepseek --models deepseek-flash   # reads the key from stdin
 node packages/cli/bin/agentherd.ts model use herder deepseek/deepseek-flash
 node packages/cli/bin/agentherd.ts start
 ```
 
-Run one task directly with `run --profile pi /tmp/demo "Create out.txt containing hello"`, and see
-recent decisions with `status`.
+Run one task directly with `run --profile pi /tmp/demo "Create out.txt containing hello"`
+(`C:\temp\demo` on Windows), and see recent decisions with `status`.
 
 </details>
 

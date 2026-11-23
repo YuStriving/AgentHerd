@@ -1,6 +1,6 @@
 # ADR 0058: The owner's 小红书 and 知乎, and one list of everything watched
 
-- Status: Accepted
+- Status: Accepted; changed by [0100](0100-every-watch-and-schedule-is-a-mailbox-source.md)
 - Date: 2026-11-11
 - Builds on: [ADR 0048](0048-watch-mail-only-when-asked.md) (mail watches), [ADR 0052](0052-offer-new-github-work-when-asked.md) (new work), [ADR 0056](0056-leaving-the-mac-asks-and-questions-close.md) (leaving the Mac)
 - Changes: [09-agent-tools §3b](../spec/09-agent-tools.md), [04-herder](../spec/04-herder.md), [07-delivery](../spec/07-delivery.md)

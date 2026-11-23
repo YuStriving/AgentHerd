@@ -238,7 +238,59 @@ CREATE TABLE IF NOT EXISTS herder_prompts(
   tools_json TEXT NOT NULL
 );`;
 
-export const LATEST_SCHEMA_VERSION = 17;
+/** The Herder's mailbox (ADR 0099): the sources the owner set up and the letters they brought. */
+export const MAILBOX_TABLES_SQL = `CREATE TABLE IF NOT EXISTS mailbox_sources(
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  note TEXT NOT NULL,
+  config_json TEXT NOT NULL,
+  every_minutes INTEGER NOT NULL,
+  paused INTEGER NOT NULL DEFAULT 0,
+  made_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  started INTEGER NOT NULL DEFAULT 0,
+  last_run_at TEXT,
+  last_ok_at TEXT,
+  last_error TEXT,
+  fails INTEGER NOT NULL DEFAULT 0,
+  state_json TEXT,
+  seen_json TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS mailbox_letters(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id TEXT NOT NULL,
+  letter_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  link TEXT,
+  sent_at TEXT,
+  fate TEXT,
+  why TEXT,
+  filed_at TEXT,
+  digested_at TEXT,
+  UNIQUE(source_id, letter_id)
+);
+CREATE INDEX IF NOT EXISTS mailbox_letters_at ON mailbox_letters(at);`;
+
+/**
+ * Every watch and schedule is a mailbox source (ADR 0100): what a source does with a new letter
+ * (`act`), its trial run so far, and the offer card a letter got with the owner's answer.
+ */
+/** Columns ADR 0100 adds: [table, column, definition]. */
+export const MAILBOX_V19_COLUMNS: readonly [string, string, string][] = [
+  ["mailbox_sources", "act", "TEXT NOT NULL DEFAULT 'sort'"],
+  ["mailbox_sources", "trials", "INTEGER NOT NULL DEFAULT 0"],
+  ["mailbox_letters", "ref_json", "TEXT"],
+  ["mailbox_letters", "answer", "TEXT"],
+];
+
+export const MAILBOX_V19_SQL = MAILBOX_V19_COLUMNS.map(
+  ([table, column, def]) => `ALTER TABLE ${table} ADD COLUMN ${column} ${def};`,
+).join("\n");
+
+export const LATEST_SCHEMA_VERSION = 19;
 
 export const SCHEMA_SQL = `
 CREATE TABLE sessions(
@@ -299,10 +351,9 @@ ${TASK_WORKSPACE_SQL}
 ${MESSAGE_TASKS_TABLE_SQL}
 ${OUTBOX_TABLE_SQL}
 ${PR_WATCHES_TABLE_SQL}
-${MAIL_WATCHES_TABLE_SQL}
-${INTAKE_WATCHES_TABLE_SQL}
-${SCHEDULES_TABLE_SQL}
 ${TASK_ALLOWED_STEPS_SQL}
 ${OWNER_CARDS_TABLE_SQL}
 ${HERDER_TABLES_SQL}
+${MAILBOX_TABLES_SQL}
+${MAILBOX_V19_SQL}
 `;

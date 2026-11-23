@@ -40,11 +40,12 @@
   Notion 通过 Composio 连接，Obsidian 笔记库会交给每个任务。
 - **插件。** 从 Claude Code 官方插件库或 GitHub 链接装 Claude Code 插件和 Gemini CLI 扩展。装之前先看它会运行什么；
   任务能用它的工具和技能，会改东西的工具先问你；主管要你打开开关才能用。
-- **一句话建定时任务。** 「工作日每天 9 点看看有没有新 issue」，主管就建好；电脑睡着时错过的，醒来只补跑一次。
-- **记忆有用不啰嗦。** 整段对话都保留，旧的部分由主管自己折叠。主管会记一张你的画像（怎么称呼你、在做什么、作息和喜好），聊天里顺口说的也算，在「记忆」页能看能改；第一次打开时就可以告诉它怎么叫你。只有任务出了问题才记一条经验，以前的结果去任务记录里查。
+- **定时的事也放进信箱。** 「工作日每天 9 点看看有没有新 issue」，主管就在信箱里加一个定时；电脑睡着时错过的，醒来只补跑一次。
+- **信箱。** 「帮我盯一下 openai/codex 的新 issue」：GitHub 仓库、RSS、Hacker News 搜索或你自己的脚本，由代码按时去看，只有新东西才交给主管。主管觉得要紧的马上告诉你，其余的留到早上汇总；「信箱」页能看到每封信主管怎么处理的、为什么。
+- **记忆有用不啰嗦。** 整段对话都保留，旧的部分由主管自己折叠。主管会记一张你的画像（怎么称呼你、在做什么、作息和喜好），聊天里顺口说的也算；你纠正它的地方会记成经验。每一轮只带跟这一轮有关的记忆，系统提示词不变，缓存一直命中。在「记忆」页能看能改；第一次打开时就可以告诉它怎么叫你。以前的结果去任务记录里查。
 - **桌宠。** 大肥鱼或 Claude 娘浮在桌面上（主管在想时她捧着书、头上冒「…」，回复到了跳一下，拖着她会走路）：飞书收到什么她就说什么，任务做完会开心，有事要你点头时带着「同意 / 拒绝」等你。点她就是和主管的对话：回复按 Markdown 显示，表格、数字、步骤、链接和可点的选项会画成组件（飞书里一样），任务存下的二维码、截图直接显示在回复里，主管觉得你该看的文件点一下就能打开，卡片和飞书里一样，每个任务还有一张任务卡，可以停止或打开；面板顶上分「对话 / 任务 / 卡片」三页，在跑的任务和等你处理的卡片单独一页看；她头顶每个在跑的任务一个小圆点，哪个在等你一眼就知道。把文件或截图拖到她身上，就能连同一句话交给主管。主管回完话，输入框里会灰着显示你可能想说的下一句，按 Tab 就填进去。不在眼前时她会弹系统通知（要你确认的事和出错的任务才响），菜单栏有个小羊图标看状态；晚上可以设免打扰时段，或临时暂停一会儿。在哪个应用里按 ⇧⌘空格 都能直接跟她说话，按两下 ⇧⌘Y 同意最早那件等你的事；可以把她拖到屏幕边上藏起来，也可以设成只有有事时才浮在最上面。
   点她就能跟主管说话，嫌碍事可以收成一个小圆点。
-- **只在本机运行。** 没有 AgentHerd 服务器，Key 和订阅登录凭据存在 `~/.agentherd/secrets.json`，只有你的账户能读。合上盖子 Agent 也能接着跑。
+- **只在本机运行。** 没有 AgentHerd 服务器，Key 和订阅登录凭据存在 `~/.agentherd/secrets.json`（Windows 在 `%USERPROFILE%\.agentherd\secrets.json`）。Windows 上谁能读取凭据取决于数据目录的权限。打开「防止休眠」后，AgentHerd 会在运行期间请求系统阻止空闲休眠。
 
 ## 怎么工作
 
@@ -62,21 +63,22 @@ pnpm install
 pnpm --filter @agentherd/desktop start
 ```
 
-第一次打开会一步步带你：告诉主管怎么叫你、选主管形象（都可以跳过），扫码接入飞书，添加模型服务和 Key（也可以用 ChatGPT、Claude、Copilot 等订阅账号登录），给主管选模型。Pi 和 Codex 随 App
-自带，在「Agent」页点「验证」确认能启动。开发时先运行一次 `pnpm --filter @agentherd/desktop fetch-agents`，
-把它们放到开发版找得到的地方；`pnpm --filter @agentherd/desktop package:mac` 打出 `AgentHerd.app` 和 `.dmg`（暂未签名）。然后在飞书里给主管发条消息就行。
+第一次打开会一步步带你：告诉主管怎么叫你、选主管形象（都可以跳过），扫码接入飞书，添加模型服务和 Key（也可以用 ChatGPT、Claude、Copilot 等订阅账号登录），给主管选模型。打包版自带 Pi 和 Codex。从源码运行时，要使用 Pi 或 Codex，先运行一次 `pnpm --filter @agentherd/desktop fetch-agents` 下载它们，再到「Agent」页点「验证」。开发界面时可用 `pnpm --filter @agentherd/desktop dev` 热重载。然后在飞书里给主管发条消息就行。
+
+- **Windows：** 在 PowerShell 里运行上面两行命令即可。关闭窗口后 AgentHerd 收进系统托盘保持连接，彻底退出请右键托盘图标；目前暂无 Windows 安装包，请从源码运行。
+- **macOS 打包：** `pnpm --filter @agentherd/desktop package:mac` 打出 `AgentHerd.app` 和 `.dmg`（暂未签名）。
 
 <details>
 <summary>不用 App，用命令行</summary>
 
 ```bash
 node packages/cli/bin/agentherd.ts setup feishu                          # 用飞书扫码
-node packages/cli/bin/agentherd.ts model add deepseek --models deepseek-flash   # Key 从标准输入读取
+node packages/cli/bin/agentherd.ts model add deepseek --models deepseek-flash   # 从标准输入读取 Key
 node packages/cli/bin/agentherd.ts model use herder deepseek/deepseek-flash
 node packages/cli/bin/agentherd.ts start
 ```
 
-直接跑一个任务：`run --profile pi /tmp/demo "Create out.txt containing hello"`；看最近的决定：`status`。
+直接跑一个任务：`run --profile pi /tmp/demo "Create out.txt containing hello"`（Windows 把路径换成 `C:\temp\demo`）；看最近的决定：`status`。
 
 </details>
 

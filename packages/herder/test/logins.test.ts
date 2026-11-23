@@ -1,5 +1,5 @@
 import { type ModelService, modelLoginAccount, type SecretStore } from "@agentherd/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { codexCanRun } from "../src/agent-models.ts";
 import {
   LOGIN_FIELD,
@@ -105,6 +105,22 @@ describe("model subscriptions (ADR 0068)", () => {
     expect(out.options.apiKey).toBe("tok");
     expect(out.options.headers).toEqual({ Authorization: "Bearer tok" });
     expect(out.model.baseUrl).toBe("https://account.example");
+  });
+
+  it("returns a model error when proxy initialization fails", async () => {
+    vi.stubEnv("https_proxy", "not-a-url");
+    try {
+      const stream = await loginStream(memorySecrets(), () => [chatgpt])(
+        resolveModel(chatgpt, "gpt-6-astra"),
+        { messages: [] },
+      );
+      expect(await stream.result()).toMatchObject({
+        stopReason: "error",
+        errorMessage: "Invalid model proxy configuration. Check HTTP_PROXY and HTTPS_PROXY.",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("fails the request as a model error when the service is not signed in", async () => {

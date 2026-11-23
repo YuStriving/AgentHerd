@@ -27,7 +27,7 @@ import type {
   OwnerImage,
 } from "./herder-port.ts";
 import type { Inbox } from "./inbox.ts";
-import type { Intake } from "./intake.ts";
+import type { Mailbox, MailboxCheck } from "./mailbox.ts";
 import type { AppTools, HerdReport, McpGateway } from "./mcp-gateway.ts";
 import type { Completer, Embedder } from "./memory-store.ts";
 import type { Outbox } from "./outbox.ts";
@@ -98,12 +98,8 @@ export interface HerdOptions {
   apps?: () => AppTools | undefined;
   /** Names of the owner's connected apps, for the Herder (e.g. ["Gmail"]). */
   appNames?: () => string[];
-  /** Minutes between two looks for new work (ADR 0052). */
-  intakePollMinutes?: number;
   /** Minutes a task waits on the owner before they are asked whether it still matters (ADR 0081). */
   waitAskMinutes?: number;
-  /** Minutes between two looks at the owner's mail watches (ADR 0048). */
-  mailPollMinutes?: number;
   /** The owner's 小红书 and 知乎 accounts the host has turned on (ADR 0058). Read on every look. */
   socials?: () => readonly SocialSource[];
   /** Public news sources (ADR 0059). */
@@ -123,16 +119,19 @@ export interface HerdOptions {
   };
   /** Lines every new task gets about tools on this Mac (ADR 0059). Read on every task. */
   toolNotes?: () => string[];
-  /** Minutes between two looks at those accounts (default 20, give or take 5). */
-  socialPollMinutes?: number;
-  /** Called when watched things change, for the app. */
-  watchesChanged?: () => void;
   /** Called after a line of the Herder's conversation is kept in `herder_turns` (the desktop pet). */
   herderTurnAdded?: () => void;
   /** Where the Herder's guess at the owner's next message goes (the desktop pet, ADR 0084). */
   suggestion?: HerderSuggestion;
   /** Plugins the owner let the Herder use (ADR 0094). */
   plugins?: HerderPlugins;
+  /**
+   * Looks at the owner's mailbox sources (ADR 0099, 0100): GitHub, feeds, Hacker News, scripts,
+   * GitHub work, mail and 小红书/知乎 notices; timers need no looking. Without it there is no mailbox.
+   */
+  mailbox?: { check: MailboxCheck; tickMs?: number; digestHour?: number };
+  /** Called when mailbox sources or letters changed, for the app. */
+  mailboxChanged?: () => void;
   /** A watched source failing this long is told to the owner (default 30, ADR 0050). */
   sourceDownMinutes?: number;
   /**
@@ -314,8 +313,8 @@ export interface HerdContext {
   readonly sources: SourceHealth;
   /** Pull requests tasks opened, when `github` is set. */
   github(): GitHubWatch | undefined;
-  /** New work the owner asked to be offered, when `github` is set (ADR 0052). */
-  intake(): Intake | undefined;
+  /** The owner's mailbox, when the host can look at sources (ADR 0099, 0100). */
+  mailbox(): Mailbox | undefined;
   /** Tasks that wait on the owner for long (ADR 0081). */
   waits(): WaitWatch;
   /** The current Herder, if any. It can change at runtime. */

@@ -8,7 +8,7 @@
 // herd.db too (ADR 0072). It never writes text of its own and makes no model calls.
 
 import type { HerderTurn, OwnerCard } from "@agentherd/core";
-import { withoutContextMarks } from "@agentherd/herder";
+import { quietReply, withoutContextMarks } from "@agentherd/herder";
 import type {
   Channel,
   ChannelBinding,
@@ -213,6 +213,8 @@ export function historyOf(
     const words = said ? withoutContextMarks(turn.text) : turn.text;
     const text = cut(words, maxFor(words, PET_HISTORY_TEXT_MAX));
     if (text === "") continue;
+    // A "say nothing" reply that slipped through as 「[安静]」 is not shown (ADR 0099).
+    if (turn.role === "herder" && quietReply(text)) continue;
     const base = { id: turn.id, at: turn.at, text };
     if (turn.role === "owner" || turn.role === "answer") {
       lines.push({ ...base, kind: "owner" });
@@ -574,14 +576,17 @@ class PetChannel implements Channel {
     return this.inner.setup(ui);
   }
 
-  async start(binding: ChannelBinding, sink: InboundSink): Promise<void> {
+  async start(
+    binding: ChannelBinding,
+    sink: (inbound: Parameters<InboundSink>[0], source?: "local") => ReturnType<InboundSink>,
+  ): Promise<void> {
     // The owner moved on in the chat: what they typed in the pet goes first, alone, so it is
     // never quoted on an answer to something else.
     await this.inner.start(binding, async (inbound) => {
       await this.feed.flush(this.inner);
       await sink(inbound);
     });
-    this.feed.attach(binding, sink);
+    this.feed.attach(binding, (inbound) => sink(inbound, "local"));
   }
 
   async stop(): Promise<void> {

@@ -1,6 +1,6 @@
 # ADR 0055: The Herder makes schedules when the owner asks
 
-- Status: Accepted
+- Status: Accepted; changed by [0100](0100-every-watch-and-schedule-is-a-mailbox-source.md)
 - Date: 2026-11-10
 - Builds on: [ADR 0033](0033-herder-does-not-repeat-reports.md), [ADR 0048](0048-watch-mail-only-when-asked.md), [ADR 0052](0052-offer-new-github-work-when-asked.md), [ADR 0053](0053-the-herder-tells-task-results.md)
 

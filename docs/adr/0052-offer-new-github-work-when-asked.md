@@ -1,6 +1,6 @@
 # ADR 0052: Offer new GitHub work only when the owner asks
 
-- Status: Accepted
+- Status: Accepted; changed by [0100](0100-every-watch-and-schedule-is-a-mailbox-source.md)
 - Date: 2026-11-08
 - Builds on: [ADR 0047](0047-follow-the-pull-requests-tasks-open.md), [ADR 0048](0048-watch-mail-only-when-asked.md), [ADR 0050](0050-tell-the-owner-when-a-source-stops.md)
 

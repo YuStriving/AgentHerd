@@ -7,12 +7,18 @@ import { homedir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import {
   chooseModel,
+  DIGEST_HOUR,
   emptyModelSettings,
   FEED_SOURCES,
   type GhRun,
   Herd,
   isSubscription,
   type JsonRpcMessage,
+  MAILBOX_EVERY_DEFAULT,
+  MAILBOX_EVERY_MIN,
+  MAILBOX_KINDS,
+  type Mailbox,
+  type MailboxKind,
   type MemoryStore,
   type ModelRef,
   type ModelRole,
@@ -29,6 +35,7 @@ import {
   UnknownTokenError,
 } from "@agentherd/core";
 import {
+  actFrom,
   activityTurns,
   agentForModel,
   builtinProviders,
@@ -48,6 +55,7 @@ import {
   resolveModel,
   serviceKey,
   serviceReady,
+  sourceConfig,
   subscriptionProviders,
   TIERS,
   type TierPlacement,
@@ -75,7 +83,14 @@ import type {
   ItemSummary,
   LarkLogin,
   LarkView,
+  Letter,
   LoginView,
+  MailboxDraft,
+  MailboxLetterView,
+  MailboxSource,
+  MailboxSourcePatch,
+  MailboxSourceView,
+  MailboxView,
   MemoryView,
   ModelProbe,
   ModelsView,
@@ -93,7 +108,6 @@ import type {
   ProbeTarget,
   ProfileFieldName,
   ProviderView,
-  SchedulesView,
   SettingsPatch,
   SetupState,
   SocialKind,
@@ -106,6 +120,7 @@ import type {
   Tier,
   TranscriptView,
   WatchView,
+  WecomView,
   WestockTest,
   WestockView,
 } from "./api.ts";
@@ -130,6 +145,7 @@ import { LocalEmbedder } from "./embedder.ts";
 import { FEED_NAMES, Feeds } from "./feeds.ts";
 import { foldText, herderContextView, herderMessages } from "./herder-context-view.ts";
 import { Lark } from "./lark.ts";
+import { mailboxCheck, type ScriptRun } from "./mailbox-sources.ts";
 import { mcpServerFor } from "./mcp-socket.ts";
 import { LoginRun } from "./model-logins.ts";
 import { PET_CARDS_MAX, PET_HISTORY_MAX, PetFeed, petConversation } from "./pet.ts";
@@ -143,6 +159,8 @@ import { RuntimeStore } from "./runtimes.ts";
 import { combineApps, Socials } from "./socials.ts";
 import { type VerifyOptions, verifyProfile } from "./verify.ts";
 import { deleteWatch, pauseWatch, watchViews } from "./watches.ts";
+import { WecomAccount, type WecomCliPort } from "./wecom-account.ts";
+import { WecomCli } from "./wecom-cli.ts";
 import { Westock, type WestockRun } from "./westock.ts";
 
 export const HOST_VERSION = "0.0.0";
@@ -184,8 +202,14 @@ export interface HostOptions {
   /** Plugins (ADR 0094): how a downloaded .tar.gz is unpacked and how a server is reached; tests fake them. */
   pluginExtract?: (file: string, dir: string) => Promise<void>;
   pluginClient?: (server: RunningServer) => McpClient;
+  /** WeCom auth and office commands (tests replace the CLI). */
+  wecomCli?: WecomCliPort;
   /** Runs `gh` for following pull requests tasks open (tests replace it). */
   gh?: GhRun;
+  /** Runs mailbox scripts; tests pass a fake (ADR 0099). */
+  mailboxScript?: ScriptRun;
+  /** How often the mailbox looks for due sources; tests make it short. */
+  mailboxTickMs?: number;
   target?: string;
   exists?: (path: string) => boolean;
   /** Options for verifyAgent (tests). */
@@ -254,6 +278,7 @@ export class Host implements HostApi {
   private readonly petFeed: PetFeed;
   /** Installed plugins (ADR 0094). */
   private readonly pluginList: PluginStore;
+  private readonly wecomApps: WecomAccount;
   /** The Herder's guess at the owner's next message, and when it came (ADR 0084). */
   private petSuggestion: { text: string; at: string } | undefined;
 
@@ -290,7 +315,7 @@ export class Host implements HostApi {
       home: opts.home,
       changed: () => this.socialsChanged(),
       log: (line) => this.log(line),
-      watch: (platform) => this.herd?.socials?.watch(platform),
+      watch: (platform) => this.socialWatch(platform),
     });
     this.larkCli = new Lark({
       changed: () => this.emit({ topic: "lark", data: this.larkCli.current() }),
@@ -311,18 +336,13 @@ export class Host implements HostApi {
       config: () => this.config(),
       save: (change) => writeConfig(this.opts.home, change(this.config())),
       changed: () => this.emit({ topic: "plugins", data: this.plugins() }),
-      env: () => {
-        const base: Record<string, string> = {};
-        for (const [k, v] of Object.entries(this.opts.env ?? process.env)) {
-          if (v !== undefined) base[k] = v;
-        }
-        return this.withToolPath(base);
-      },
+      env: () => this.toolEnv(),
       ...(opts.fetch === undefined ? {} : { fetchFn: opts.fetch }),
       ...(opts.pluginExtract === undefined ? {} : { extract: opts.pluginExtract }),
       ...(opts.pluginClient === undefined ? {} : { client: opts.pluginClient }),
       log: (line) => this.log(line),
     });
+    this.wecomApps = new WecomAccount(opts.wecomCli ?? new WecomCli(join(opts.home, "wecom-cli")));
     this.westockCli = new Westock({
       home: opts.home,
       enabled: () => !(this.config().westockOff ?? false),
@@ -453,10 +473,47 @@ export class Host implements HostApi {
   }
 
   private socialsChanged(): void {
-    // A platform that just signed in starts being looked at.
-    this.herd?.socials?.schedule();
+    // A platform that just signed in is looked at now, not at its next turn (ADR 0100).
+    const box = this.herd?.mailbox;
+    for (const s of box?.list() ?? []) {
+      if (s.kind === "social" && !s.paused && !s.started) {
+        void box?.runNow(s.id).catch(() => {});
+      }
+    }
     this.emit({ topic: "socials", data: this.socials() });
-    this.emit({ topic: "watches", data: this.watches() });
+  }
+
+  /** What reaches the Herder from a platform: mentions while its social source looks (ADR 0100). */
+  private socialWatch(platform: SocialPlatform): Record<SocialKind, boolean> | undefined {
+    const box = this.herd?.mailbox;
+    if (box === undefined) return undefined;
+    const on = box.list().some((s) => this.isSocialSource(s, platform) && !s.paused);
+    return { mentions: on, likes: false, follows: false };
+  }
+
+  private isSocialSource(s: MailboxSource, platform: SocialPlatform): boolean {
+    return s.kind === "social" && s.config.platform === platform;
+  }
+
+  /** Turns a platform's comments and @ on or off: its social source in the mailbox (ADR 0100). */
+  private setSocialMentions(platform: SocialPlatform, on: boolean, addMissing: boolean): void {
+    const box = this.herd?.mailbox;
+    if (box === undefined) return;
+    const found = box.list().filter((s) => this.isSocialSource(s, platform));
+    if (found.length === 0) {
+      if (!on || !addMissing) return;
+      const name = this.socialList.views().find((v) => v.platform === platform)?.name ?? platform;
+      box.add({
+        kind: "social",
+        name: `${name}的评论和@`,
+        note: "有人评论或 @ 我就告诉我",
+        config: { platform },
+        by: "owner",
+      });
+    } else {
+      for (const s of found) if (s.paused === on) box.set(s.id, { paused: !on });
+    }
+    this.emit({ topic: "mailbox", data: this.mailbox() });
   }
 
   // ---- Plugins (ADR 0094) ----
@@ -485,12 +542,94 @@ export class Host implements HostApi {
     return this.pluginList.remove(id);
   }
 
+  async wecom(): Promise<WecomView> {
+    return this.wecomApps.view();
+  }
+
+  startWecomLogin(): Promise<WecomView> {
+    return this.wecomApps.startLogin();
+  }
+
+  cancelWecomLogin(): Promise<WecomView> {
+    return this.wecomApps.cancelLogin();
+  }
+
+  disconnectWecom(): Promise<WecomView> {
+    return this.wecomApps.disconnect();
+  }
+
+  mailbox(): MailboxView {
+    return mailboxView(this.herd?.mailbox);
+  }
+
+  async mailboxAdd(draft: MailboxDraft): Promise<MailboxView> {
+    const act = actFrom(draft.kind, draft.act, undefined);
+    this.needMailbox().add({
+      kind: draft.kind,
+      name: draft.name,
+      note: draft.note ?? "",
+      config: sourceConfig(draft.kind, draft),
+      by: "owner",
+      ...(draft.everyMinutes === undefined || draft.kind === "timer"
+        ? {}
+        : { everyMinutes: draft.everyMinutes }),
+      ...(act === undefined ? {} : { act }),
+    });
+    return this.mailbox();
+  }
+
+  async mailboxSet(id: string, patch: MailboxSourcePatch): Promise<MailboxView> {
+    const box = this.needMailbox();
+    const source = box.list().find((s) => s.id === id);
+    if (source === undefined) throw new Error(`no source ${id}`);
+    const act =
+      patch.act === undefined && patch.trial === undefined
+        ? undefined
+        : actFrom(source.kind, patch.act, patch.trial, source.act);
+    box.set(id, {
+      ...(patch.name === undefined ? {} : { name: patch.name }),
+      ...(patch.note === undefined ? {} : { note: patch.note }),
+      ...(patch.everyMinutes === undefined ? {} : { everyMinutes: patch.everyMinutes }),
+      ...(patch.paused === undefined ? {} : { paused: patch.paused }),
+      ...(patch.fields === undefined ? {} : { config: sourceConfig(source.kind, patch.fields) }),
+      ...(act === undefined ? {} : { act }),
+    });
+    return this.mailbox();
+  }
+
+  async mailboxRemove(id: string): Promise<MailboxView> {
+    this.needMailbox().remove(id);
+    return this.mailbox();
+  }
+
+  async mailboxRun(id: string): Promise<MailboxView> {
+    await this.needMailbox().runNow(id);
+    return this.mailbox();
+  }
+
+  mailboxTry(draft: MailboxDraft): Promise<Letter[]> {
+    return this.needMailbox().tryOut({
+      kind: draft.kind,
+      name: draft.name,
+      note: draft.note ?? "",
+      config: sourceConfig(draft.kind, draft),
+    });
+  }
+
+  private needMailbox(): Mailbox {
+    const box = this.herd?.mailbox;
+    if (box === undefined) throw new Error("AgentHerd is not running yet");
+    return box;
+  }
+
   socials(): SocialView[] {
     return this.socialList.views();
   }
 
   async enableSocial(platform: SocialPlatform, accepted: boolean): Promise<SocialView[]> {
     await this.socialList.enable(platform, accepted);
+    // Comments and @ are told by default (ADR 0058), now as a mailbox source (ADR 0100).
+    this.setSocialMentions(platform, true, true);
     return this.socials();
   }
 
@@ -514,23 +653,24 @@ export class Host implements HostApi {
   }
 
   setSocialWatch(platform: SocialPlatform, kind: SocialKind, on: boolean): SocialView[] {
-    const socials = this.herd?.socials;
-    if (socials === undefined) throw new Error("AgentHerd is not running; connect Feishu first");
-    socials.setWatch(platform, kind, on);
+    if (this.herd?.mailbox === undefined) {
+      throw new Error("AgentHerd is not running; connect Feishu first");
+    }
+    if (kind !== "mentions") throw new Error("only comments and @ are told");
+    this.setSocialMentions(platform, on, true);
     return this.socials();
   }
 
   watches(): WatchView[] {
     const herd = this.herd;
     if (herd === undefined) return [];
-    return watchViews(herd, this.socialList.views());
+    return watchViews(herd);
   }
 
   setWatchPaused(id: string, paused: boolean): WatchView[] {
     const herd = this.herd;
     if (herd === undefined) throw new Error("AgentHerd is not running; connect Feishu first");
     pauseWatch(herd, id, paused);
-    this.emit({ topic: "socials", data: this.socials() });
     return this.watches();
   }
 
@@ -595,6 +735,7 @@ export class Host implements HostApi {
   /** Starts following tasks if a channel is bound. */
   async start(): Promise<void> {
     void this.appList.load();
+    if (this.opts.mcpSocket !== undefined) void this.wecomApps.restore();
     this.socialList.start();
     void this.westockCli.check();
     if (this.danjuanCli.enabled()) void this.danjuanCli.check();
@@ -642,6 +783,7 @@ export class Host implements HostApi {
     this.westockCli.stop();
     this.danjuanCli.stop();
     this.pluginList.stopAll();
+    this.wecomApps.close();
     this.setupRun++;
     await this.stopHerd();
   }
@@ -702,7 +844,6 @@ export class Host implements HostApi {
         holdings: (query) => this.danjuanCli.holdings(query),
       },
       toolNotes: () => this.toolNotes(),
-      watchesChanged: () => this.socialsChanged(),
       herderTurnAdded: () => {
         // Anything said makes the last guess stale (ADR 0084).
         this.petSuggestion = undefined;
@@ -718,6 +859,19 @@ export class Host implements HostApi {
           this.emit({ topic: "pet", data: this.pet() });
         },
       },
+      mailbox: {
+        check: mailboxCheck({
+          gh: this.opts.gh ?? runGh(withSystemProxy()),
+          home: this.opts.userHome ?? homedir(),
+          env: () => this.toolEnv(),
+          apps: () => this.appList.appTools(),
+          socials: () => this.socialList.sources(),
+          ...(this.opts.fetch === undefined ? {} : { fetchFn: this.opts.fetch }),
+          ...(this.opts.mailboxScript === undefined ? {} : { script: this.opts.mailboxScript }),
+        }),
+        ...(this.opts.mailboxTickMs === undefined ? {} : { tickMs: this.opts.mailboxTickMs }),
+      },
+      mailboxChanged: () => this.emit({ topic: "mailbox", data: this.mailbox() }),
       plugins: {
         list: () => this.pluginList.herderList(),
         call: (name, args) => this.pluginList.herderCall(name, args),
@@ -735,8 +889,9 @@ export class Host implements HostApi {
                 this.westockCli.tools(),
                 this.danjuanCli.tools(),
                 this.pluginList.tools(),
+                this.wecomApps.apps(),
               ]),
-            appNames: () => this.appList.connectedNames(),
+            appNames: () => [...this.appList.connectedNames(), ...this.wecomApps.connectedNames()],
           }),
       agentModels: {
         list: () =>
@@ -1156,28 +1311,6 @@ export class Host implements HostApi {
     return this.memories();
   }
 
-  schedules(): SchedulesView {
-    const herd = this.herd;
-    if (herd === undefined) return { schedules: [], ready: false };
-    return { schedules: herd.schedules.list(), ready: true };
-  }
-
-  setSchedulePaused(id: string, paused: boolean): SchedulesView {
-    this.ownSchedules().change(id, { paused });
-    return this.schedules();
-  }
-
-  removeSchedule(id: string): SchedulesView {
-    if (!this.ownSchedules().remove(id)) throw new Error("no such schedule");
-    return this.schedules();
-  }
-
-  private ownSchedules() {
-    const herd = this.herd;
-    if (herd === undefined) throw new Error("AgentHerd is not running; connect Feishu first");
-    return herd.schedules;
-  }
-
   ownerProfile(): OwnerProfile {
     const out: OwnerProfile = {};
     for (const r of this.herd?.store.memory.list({ kinds: ["profile"] }) ?? []) {
@@ -1238,6 +1371,15 @@ export class Host implements HostApi {
 
   providers(): ProviderView[] {
     return builtinProviders();
+  }
+
+  /** The environment tools run in: ours, with `<home>/bin` on the path. */
+  private toolEnv(): Record<string, string> {
+    const base: Record<string, string> = {};
+    for (const [k, v] of Object.entries(this.opts.env ?? process.env)) {
+      if (v !== undefined) base[k] = v;
+    }
+    return this.withToolPath(base);
   }
 
   /** Prepends `<home>/bin` (`westock`, etc.) to `PATH` when present without duplicating `Path`/`PATH` (ADR 0076). */
@@ -1713,4 +1855,28 @@ function petSettings(config: CliConfig): PetSettings {
     overFullscreen: flag("overFullscreen"),
     suggest: flag("suggest"),
   };
+}
+
+/** Letters shown on the 信箱 page. */
+export const MAILBOX_LETTERS_SHOWN = 300;
+
+/** The 信箱 page: sources and the newest letters, each with its source's name (ADR 0099). */
+export function mailboxView(box: Mailbox | undefined): MailboxView {
+  const every = Object.fromEntries(
+    MAILBOX_KINDS.map((k) => [k, { min: MAILBOX_EVERY_MIN[k], default: MAILBOX_EVERY_DEFAULT[k] }]),
+  ) as Record<MailboxKind, { min: number; default: number }>;
+  if (box === undefined)
+    return { on: false, sources: [], letters: [], every, digestHour: DIGEST_HOUR };
+  const sources: MailboxSourceView[] = box.list().map((s) => {
+    const nextAt = s.kind === "timer" ? box.nextAt(s) : undefined;
+    return nextAt === undefined ? s : { ...s, nextAt };
+  });
+  const byId = new Map(sources.map((s) => [s.id, s]));
+  const letters: MailboxLetterView[] = [];
+  for (const l of box.letters(MAILBOX_LETTERS_SHOWN)) {
+    const s = byId.get(l.sourceId);
+    if (s === undefined) continue;
+    letters.push({ ...l, source: s.name, kind: s.kind });
+  }
+  return { on: true, sources, letters, every, digestHour: DIGEST_HOUR };
 }

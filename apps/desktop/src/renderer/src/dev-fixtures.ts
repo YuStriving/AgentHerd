@@ -8,10 +8,12 @@ import type {
   HerderContextView,
   HerderMessageView,
   LarkView,
+  MailboxLetterView,
+  MailboxSourceView,
+  MailboxView,
   MemoryView,
   ModelsView,
   ProviderView,
-  SchedulesView,
   SocialView,
   SubscriptionView,
   TasksView,
@@ -409,44 +411,6 @@ export function hoursFromNow(hours: number): string {
   return new Date(Date.now() + hours * 3_600_000).toISOString();
 }
 
-/** What the 定时任务 page shows in the browser preview; `empty` shows the empty state. */
-export function sampleSchedules(empty: boolean): SchedulesView {
-  if (empty) return { ready: true, schedules: [] };
-  const createdAt = "2026-11-05T10:00:00.000Z";
-  return {
-    ready: true,
-    schedules: [
-      {
-        id: "sch1",
-        about: "早上看 PI-Desktop 新 issue",
-        prompt: "看看 PI-Desktop 有没有新 issue，有好上手的就告诉我",
-        when: { kind: "daily", at: "09:00", days: [1, 2, 3, 4, 5] },
-        paused: false,
-        createdAt,
-        nextAt: hoursFromNow(18),
-      },
-      {
-        id: "sch2",
-        about: "盯着 #2000 的 CI",
-        prompt: "看一下 #2000 的 CI 过了没有，没过就告诉我哪里挂了",
-        when: { kind: "every", hours: 3 },
-        paused: false,
-        createdAt,
-        nextAt: hoursFromNow(2),
-        lastAt: createdAt,
-      },
-      {
-        id: "sch3",
-        about: "周报",
-        prompt: "汇总这周做完的任务，写一份周报",
-        when: { kind: "daily", at: "17:30", days: [5] },
-        paused: true,
-        createdAt,
-      },
-    ],
-  };
-}
-
 /** The platforms in the browser preview: 小红书 signed in with mentions on, 知乎 not connected. */
 export function sampleSocials(): SocialView[] {
   return [
@@ -473,7 +437,7 @@ export function sampleSocials(): SocialView[] {
   ];
 }
 
-/** What the 监听 section shows in the browser preview; `empty` shows the empty state. */
+/** The tasks' pull requests in the browser preview (ADR 0100); `empty` has none. */
 export function sampleWatches(empty: boolean): WatchView[] {
   if (empty) return [];
   return [
@@ -486,34 +450,6 @@ export function sampleWatches(empty: boolean): WatchView[] {
       removable: true,
       createdAt: hoursFromNow(-30),
       activeAt: hoursFromNow(-0.3),
-    },
-    {
-      id: "mail:m1",
-      kind: "mail",
-      title: "Apple 开发者账号续费的回信",
-      detail: "Gmail，有回信就告诉你",
-      paused: false,
-      removable: true,
-      createdAt: hoursFromNow(-50),
-    },
-    {
-      id: "intake:i1",
-      kind: "intake",
-      title: "PI-Desktop 新 issue",
-      detail: "GitHub 上分给你或没人认领的新 issue，每 30 分钟看一次",
-      paused: true,
-      removable: true,
-      createdAt: hoursFromNow(-120),
-      activeAt: hoursFromNow(-52),
-    },
-    {
-      id: "social:xiaohongshu:mentions",
-      kind: "social",
-      title: "小红书 · 评论和@",
-      detail: "每 20 分钟左右看一次通知",
-      paused: false,
-      removable: false,
-      activeAt: hoursFromNow(-2),
     },
   ];
 }
@@ -946,4 +882,218 @@ export function sampleHerderMessages(from: number, to: number): HerderMessageVie
       more: 0,
     };
   });
+}
+
+/** What the 信箱 page shows in the browser preview (ADR 0099); `empty` has no sources yet. */
+export function sampleMailbox(empty: boolean): MailboxView {
+  const every = {
+    github: { min: 5, default: 10 },
+    work: { min: 5, default: 5 },
+    mail: { min: 3, default: 5 },
+    social: { min: 20, default: 20 },
+    rss: { min: 15, default: 60 },
+    hn: { min: 15, default: 60 },
+    script: { min: 1, default: 30 },
+    timer: { min: 0, default: 0 },
+  };
+  if (empty) return { on: true, sources: [], letters: [], every, digestHour: 9 };
+  const sources: MailboxSourceView[] = [
+    {
+      id: "m-codex",
+      kind: "github",
+      name: "codex",
+      note: "macOS 上崩溃、卡住的马上告诉我，新版本早上汇总",
+      config: { repo: "openai/codex", what: ["issues", "releases"] },
+      everyMinutes: 10,
+      paused: false,
+      by: "herder",
+      createdAt: hoursFromNow(-50),
+      started: true,
+      lastRunAt: hoursFromNow(-0.1),
+      lastOkAt: hoursFromNow(-0.1),
+      fails: 0,
+      letters: 4,
+      act: "sort",
+      trials: 0,
+    },
+    {
+      id: "m-simon",
+      kind: "rss",
+      name: "simonwillison.net",
+      note: "讲 agent 和记忆的文章留到汇总",
+      config: { url: "https://simonwillison.net/atom/everything/" },
+      everyMinutes: 60,
+      paused: false,
+      by: "owner",
+      createdAt: hoursFromNow(-30),
+      started: true,
+      lastRunAt: hoursFromNow(-0.6),
+      lastOkAt: hoursFromNow(-0.6),
+      fails: 0,
+      letters: 2,
+      act: "sort",
+      trials: 0,
+    },
+    {
+      id: "m-hn",
+      kind: "hn",
+      name: "HN：agent memory",
+      note: "100 分以上的告诉我",
+      config: { words: "agent memory", points: 50 },
+      everyMinutes: 60,
+      paused: false,
+      by: "owner",
+      createdAt: hoursFromNow(-20),
+      started: true,
+      lastRunAt: hoursFromNow(-0.4),
+      lastError: "hn.algolia.com answered 503",
+      fails: 1,
+      letters: 1,
+      act: "sort",
+      trials: 0,
+    },
+    {
+      id: "m-prices",
+      kind: "script",
+      name: "机票价格",
+      note: "上海到东京低于 2000 告诉我",
+      config: { command: "python3 ~/bin/flights.py" },
+      everyMinutes: 120,
+      paused: true,
+      by: "owner",
+      createdAt: hoursFromNow(-80),
+      started: true,
+      lastRunAt: hoursFromNow(-26),
+      fails: 0,
+      letters: 0,
+      act: "sort",
+      trials: 0,
+    },
+    {
+      id: "m-work",
+      kind: "work",
+      name: "派给我的活",
+      note: "PI-Desktop 的 issue 问我要不要开任务",
+      config: { what: ["assigned"], repo: "vastsa/PI-Desktop" },
+      everyMinutes: 5,
+      paused: false,
+      by: "herder",
+      createdAt: hoursFromNow(-40),
+      started: true,
+      lastRunAt: hoursFromNow(-0.05),
+      lastOkAt: hoursFromNow(-0.05),
+      fails: 0,
+      letters: 1,
+      act: "offer",
+      trials: 0,
+    },
+    {
+      id: "m-morning",
+      kind: "timer",
+      name: "早上看 PI-Desktop",
+      note: "看看 PI-Desktop 有没有新 issue，有好上手的就告诉我，没有就不用说",
+      config: { when: { kind: "daily", at: "09:00", days: [1, 2, 3, 4, 5] } },
+      everyMinutes: 0,
+      paused: false,
+      by: "herder",
+      createdAt: hoursFromNow(-100),
+      started: true,
+      lastRunAt: hoursFromNow(-6),
+      fails: 0,
+      letters: 3,
+      act: "sort",
+      trials: 0,
+      nextAt: hoursFromNow(18),
+    },
+    {
+      id: "m-xhs",
+      kind: "social",
+      name: "小红书的评论和@",
+      note: "有人评论或 @ 我就告诉我",
+      config: { platform: "xiaohongshu" },
+      everyMinutes: 20,
+      paused: false,
+      by: "owner",
+      createdAt: hoursFromNow(-60),
+      started: true,
+      lastRunAt: hoursFromNow(-0.2),
+      lastOkAt: hoursFromNow(-0.2),
+      fails: 0,
+      letters: 0,
+      act: "sort",
+      trials: 0,
+    },
+  ];
+  const letter = (
+    id: number,
+    source: MailboxSourceView,
+    hours: number,
+    title: string,
+    rest: Partial<MailboxLetterView>,
+  ): MailboxLetterView => ({
+    id,
+    sourceId: source.id,
+    letterId: `${source.kind}:${id}`,
+    source: source.name,
+    kind: source.kind,
+    at: hoursFromNow(-hours),
+    title,
+    body: "",
+    sentAt: hoursFromNow(-hours),
+    ...rest,
+  });
+  const [codex, simon, hn, , work, morning] = sources as MailboxSourceView[] & {
+    0: MailboxSourceView;
+    1: MailboxSourceView;
+    2: MailboxSourceView;
+    4: MailboxSourceView;
+    5: MailboxSourceView;
+  };
+  const letters: MailboxLetterView[] = [
+    letter(11, work, 0.05, "派给你的 issue vastsa/PI-Desktop #2214 文件树拖拽后顺序错乱", {
+      link: "https://github.com/vastsa/PI-Desktop/issues/2214",
+      fate: "now",
+      why: "问你要不要开任务",
+    }),
+    letter(10, morning, 6, "早上看 PI-Desktop", {
+      fate: "now",
+      why: "到点了，交给主管去做",
+    }),
+    letter(9, codex, 0.1, "#7012 Crash on macOS 26 when resuming a session", {
+      link: "https://github.com/openai/codex/issues/7012",
+      sentAt: undefined,
+    }),
+    letter(8, hn, 1.2, "Show HN: A memory layer for coding agents", {
+      link: "https://news.ycombinator.com/item?id=46000001",
+      fate: "digest",
+      why: "跟你在做的记忆有关，82 分还不到 100",
+    }),
+    letter(7, codex, 2, "#7008 codex exec hangs on macOS after sleep", {
+      link: "https://github.com/openai/codex/issues/7008",
+      fate: "now",
+      why: "macOS 上卡住，你说过要马上知道",
+    }),
+    letter(6, codex, 5, "发布 rust-v0.72.0", {
+      link: "https://github.com/openai/codex/releases/tag/rust-v0.72.0",
+      fate: "digest",
+      why: "新版本，按你说的早上汇总",
+    }),
+    letter(5, simon, 9, "Prompt injection in agent memory, again", {
+      link: "https://simonwillison.net/2026/Nov/21/memory-injection/",
+      fate: "digest",
+      why: "讲 agent 记忆的安全问题",
+      digestedAt: hoursFromNow(-3),
+    }),
+    letter(4, codex, 14, "#6990 Typo in docs/config.md", {
+      link: "https://github.com/openai/codex/issues/6990",
+      fate: "noted",
+      why: "文档错字，跟你没关系",
+    }),
+    letter(3, simon, 26, "Weeknotes: a quiet week", {
+      link: "https://simonwillison.net/2026/Nov/20/weeknotes/",
+      fate: "noted",
+      why: "周记，没有你关心的内容",
+    }),
+  ];
+  return { on: true, sources, letters, every, digestHour: 9 };
 }

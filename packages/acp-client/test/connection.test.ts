@@ -170,8 +170,15 @@ turns:
     };
     const id = await conn.newSession(dir, [server]);
     await conn.loadSession(id, dir, [server]);
-    const lines = conn.stderr().join("\n");
-    expect(lines.match(/mcp agentherd relay/g)).toHaveLength(2);
+    // The RPC response and stderr arrive on separate pipes.
+    await expect
+      .poll(() =>
+        conn
+          .stderr()
+          .join("\n")
+          .match(/mcp agentherd relay/g),
+      )
+      .toHaveLength(2);
   });
 
   it("redacts env secrets in stderr and strips CR from CRLF lines", async () => {

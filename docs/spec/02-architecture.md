@@ -111,7 +111,7 @@ Rules:
   the owner ticks models instead of typing ids), `setupFeishu`, `cancelSetup`, `setupState`,
   `updateSettings`, `transcript` (a task's conversation), `herderActivity` (what the Herder did,
   see 08 §6), `herderContext`, `herderMessages`, `herderContextFold` (what its next request carries,
-  its folds as a tree, its requests and token use, read from herd.db alone; ADR 0093, ADR 0096), `pluginCatalog`, `plugins`, `previewPlugin`, `installPlugin`, `setPlugin`, `removePlugin` (plugins, ADR 0094), `pet`, `petSay`, `petPress` (the desktop pet, ADR 0070: what it shows, and the
+  its folds as a tree, its requests and token use, read from herd.db alone; ADR 0093, ADR 0096), `pluginCatalog`, `plugins`, `previewPlugin`, `installPlugin`, `setPlugin`, `removePlugin` (plugins, ADR 0094), `mailbox`, `mailboxAdd`, `mailboxSet`, `mailboxRemove`, `mailboxRun`, `mailboxTry` (the 信箱 page, ADR 0099), `pet`, `petSay`, `petPress` (the desktop pet, ADR 0070: what it shows, and the
   owner's message or button press, delivered to the herd as if from the channel; the cards
   AgentHerd sent, ADR 0072), `stopTask` (the owner stops a task from the pet's task card, ADR
   0072). Later:
@@ -125,7 +125,7 @@ All state is under `~/.agentherd/` (overridable by `AGENTHERD_HOME`):
 | --- | --- |
 | `config.json` | Settings and agent profiles, without secrets |
 | `plugins/` | Installed plugins, one folder each, and the official library cache (ADR 0094) |
-| `herd.db` | SQLite: sessions, tasks, items, decisions, rules, memory, the Herder's whole conversation (`herder_messages` with `herder_rounds`, ADR 0095), the cards sent to the owner (`owner_cards`, ADR 0072), each Herder request's token use (`herder_requests`), its folds (`herder_folds`), events and system prompts (ADR 0095) |
+| `herd.db` | SQLite: sessions, tasks, items, decisions, rules, memory, the Herder's whole conversation (`herder_messages` with `herder_rounds`, ADR 0095), the cards sent to the owner (`owner_cards`, ADR 0072), each Herder request's token use (`herder_requests`), its folds (`herder_folds`), events and system prompts (ADR 0095), the mailbox's sources and letters (`mailbox_sources`, `mailbox_letters`, ADR 0099) |
 | `run/herd.sock` | Local API socket (not on Windows, see §4) |
 | `logs/` | Rotated logs. Secrets redacted. |
 | `backups/` | Copies of agent config files before each export |

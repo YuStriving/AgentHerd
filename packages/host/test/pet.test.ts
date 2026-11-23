@@ -268,6 +268,7 @@ describe("PetFeed (ADR 0070)", () => {
       { id: 12, at, role: "herder", text: "找到了，传媒港 B1 那一排。", taskId: "t1" },
       { id: 13, at, role: "herder", text: "   " },
       { id: 14, at, role: "herder", text: "旧任务说完了", taskId: "gone" },
+      { id: 15, at, role: "herder", text: "[安静]" },
     ];
     const titles: Record<string, string> = { t1: "小红书：西岸面馆" };
     expect(historyOf(turns, (id) => titles[id])).toEqual([

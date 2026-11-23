@@ -44,9 +44,10 @@ import type { AgentMessage, AgentTool, AgentToolResult } from "@agentherd/herder
 import { bool, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { OWNER_LABEL } from "./prompt.ts";
 
-/** Where the memory starts in the system prompt (`memorySnapshot`). */
 /** The first resident memory block (`[记忆 · <kind> — … 用量 N/cap 字]`), not a mention of one in the rules. */
 const MEMORY_START = /^\[记忆 · [^\]\n]* — [^\]\n]*用量 /m;
+/** Where a turn's memory starts in its message (ADR 0101). */
+const TURN_MEMORY_START = "\n\n[记忆召回 · ";
 const FOLD_START = "[Compressed conversation section]";
 
 /**
@@ -394,7 +395,8 @@ function foldTopic(content: unknown): string {
 }
 
 /**
- * What a request is made of, by part (ADR 0093): the system prompt with the memory split off, the
+ * What a request is made of, by part (ADR 0093): the system prompt with old resident memory split
+ * off, a turn's memory (ADR 0101), the
  * tool schemas, the owner's messages, the Herder's replies and calls, tool results, and the folded
  * summaries with AgentHerd's notes. Tokens are estimates, counted as the kernel counts them.
  */
@@ -428,7 +430,14 @@ export function measureContext(
       if (bare.startsWith(FOLD_START))
         add("folds", firstLine(bare.slice(FOLD_START.length)) || "折叠摘要", bare);
       else if (m.timestamp === 0) add("folds", firstLine(bare) || "提示", bare);
-      else add("owner", firstLine(bare) || "（图片）", bare);
+      else {
+        // The turn's memory rides at the end of its message while the turn runs (ADR 0101).
+        const at = bare.lastIndexOf(TURN_MEMORY_START);
+        const words = at < 0 ? bare : bare.slice(0, at);
+        add("owner", firstLine(words) || "（图片）", words);
+        if (at >= 0)
+          add("memory", "这一轮的记忆", bare.slice(at + 2), defaultCountTokens(bare.slice(at + 2)));
+      }
     } else if (m.role === "assistant") {
       const texts: string[] = [];
       const calls: string[] = [];

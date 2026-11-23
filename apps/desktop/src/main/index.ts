@@ -221,9 +221,9 @@ function openApp(taskId?: string): void {
 }
 
 /** Shows the pet's panel on a page; false when the pet is off (ADR 0079). */
-function showPet(tab: NoticeTab): boolean {
+function showPet(tab: NoticeTab, toggle = false): boolean {
   if (pet === undefined || petSettings?.on !== true) return false;
-  return pet.show(tab);
+  return pet.show(tab, toggle);
 }
 
 /** A click on a notification: the pet at the page it is about, else the app. */
@@ -232,9 +232,9 @@ function showNotice(notice: Notice): void {
   openApp(notice.taskId);
 }
 
-/** The talk shortcut: the pet's conversation with the cursor in its input, or the app. */
+/** The talk shortcut toggles the pet's conversation, or opens the app while the pet is off. */
 function onTalkKey(): void {
-  if (!showPet("chat")) openApp();
+  if (!showPet("chat", true)) openApp();
 }
 
 /** The approve shortcut: picks the oldest approval, allows it on a second press (ADR 0080). */

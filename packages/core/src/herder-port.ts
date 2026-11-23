@@ -1,16 +1,23 @@
-import type { SocialKind, SocialPlatform } from "./social-watch.ts";
+import type { SocialPlatform } from "./social-watch.ts";
 import type { SourceState } from "./source-health.ts";
 // What the Herd and the Herder know about each other (docs/spec/04-herder.md §1). The core does
 // not import the Herder or any model library: the CLI or the app passes a factory.
 
 import type { Locale, ReportResult } from "@agentherd/protocol";
 import type { OutboundStep } from "@agentherd/rules";
-import type { IntakeRequest } from "./intake.ts";
+import type {
+  Letter,
+  LetterDelivery,
+  LetterFate,
+  MailboxPatch,
+  MailboxSource,
+  MailboxSourceInput,
+} from "./mailbox.ts";
 import type { HerdReport } from "./mcp-gateway.ts";
 import type { Completer, Embedder, MemoryStore } from "./memory-store.ts";
 import type { NoticeKind, NoticeLevel } from "./notices.ts";
-import type { Schedule, ScheduleInput, SchedulePatch } from "./schedules.ts";
-import type { DecisionRow, IntakeWatch, MailWatch, TranscriptEntry } from "./store.ts";
+import type { Schedule } from "./schedules.ts";
+import type { DecisionRow, TranscriptEntry } from "./store.ts";
 import type { Task } from "./tasks.ts";
 import type { CoreTexts } from "./texts.ts";
 
@@ -158,19 +165,25 @@ export interface HerderHost {
   ask(text: string, options: string[]): Promise<void>;
   /** Names of the owner's connected apps; agents use them (docs/spec/09-agent-tools.md §3). */
   apps?(): string[];
-  /** Mail the owner asked to hear about (ADR 0048); absent without connected apps. */
-  mailWatches?(): MailWatch[];
-  /** Starts telling the owner about mail matching a Gmail search; throws when Gmail cannot be read. */
-  watchMail?(about: string, query: string): Promise<MailWatch>;
-  unwatchMail?(id: string): boolean;
-  /** Turned-on 小红书 / 知乎 accounts and what each tells the owner about (ADR 0058). */
+  /** The owner's mailbox sources (ADR 0099). */
+  mailboxSources?(): MailboxSource[];
+  addMailboxSource?(input: MailboxSourceInput): MailboxSource;
+  changeMailboxSource?(id: string, patch: MailboxPatch): MailboxSource;
+  removeMailboxSource?(id: string): boolean;
+  /** One look without keeping anything. */
+  tryMailboxSource?(input: MailboxSourceInput): Promise<Letter[]>;
+  /** What the Herder made of letters; returns ids that are not letters. */
+  fileLetters?(items: { id: number; fate: LetterFate; why: string }[]): number[];
+  /**
+   * Turned-on 小红书 / 知乎 accounts (ADR 0058): whether each is signed in, and whether a mailbox
+   * source tells the owner about its comments and mentions (ADR 0100).
+   */
   socialWatches?(): {
     platform: SocialPlatform;
     name: string;
     ready: boolean;
-    watch: Record<SocialKind, boolean>;
+    watch: { mentions: boolean };
   }[];
-  setSocialWatch?(platform: SocialPlatform, kind: SocialKind, on: boolean): void;
   /** Turned-on news sources (ADR 0059). */
   feeds?(): readonly FeedSource[];
   /** Reads one; `mark` records the items as told to the owner. */
@@ -185,15 +198,6 @@ export interface HerderHost {
   fundHoldings?(query?: { days?: number; account?: string }): Promise<string>;
   /** Lines every new task gets: tools on this computer the agent can use (ADR 0059, ADR 0076, ADR 0077). */
   toolNotes?(): string[];
-  /** New-work watches (ADR 0052), when GitHub is set up. */
-  intakeWatches?(): IntakeWatch[];
-  watchIntake?(request: IntakeRequest): Promise<IntakeWatch>;
-  unwatchIntake?(id: string): boolean;
-  /** What the Herder does at set times (ADR 0055). */
-  schedules?(): Schedule[];
-  addSchedule?(input: ScheduleInput): Schedule;
-  changeSchedule?(id: string, patch: SchedulePatch): Schedule;
-  removeSchedule?(id: string): boolean;
   /** Watched sources that are failing now (ADR 0050). */
   sources?(): SourceState[];
   /** How each informational notice reaches the owner (ADR 0061). */
@@ -375,6 +379,11 @@ export interface HerderPort {
   intake?(text: string, auto: boolean, trial?: boolean): void;
   /** A schedule is due (ADR 0055): its words come back as a turn of their own. */
   scheduled?(schedule: Schedule): void;
+  /**
+   * Letters the owner's mailbox sources brought (ADR 0099), or the ones kept for the morning
+   * digest: a turn that files each and tells the owner only what matters now.
+   */
+  letters?(delivery: LetterDelivery): void;
   /**
    * Tells the owner a task's result in the Herder's words. Resolves with the message to send ("" to
    * send nothing: the owner already heard it), or undefined when the Herder could not speak.

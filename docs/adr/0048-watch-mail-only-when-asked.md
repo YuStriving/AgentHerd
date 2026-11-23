@@ -1,6 +1,6 @@
 # ADR 0048: Watch mail only when the owner asks
 
-- Status: Accepted
+- Status: Accepted; changed by [0100](0100-every-watch-and-schedule-is-a-mailbox-source.md)
 - Date: 2026-11-08
 - Amends: [ADR 0047](0047-follow-the-pull-requests-tasks-open.md) (the "Gmail" alternative)
 

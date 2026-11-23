@@ -7,16 +7,15 @@ import {
   streamSimple,
 } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
-import { Herder, MEMORY_REFRESH_MS, REVIEW_EVERY_TURNS } from "../src/herder.ts";
+import { Herder, REVIEW_TOKENS } from "../src/herder.ts";
 import {
   dateNote,
   decisionsText,
   lessonsText,
-  memorySnapshot,
   memoryTools,
   opProblem,
   ownerPrefsText,
-  recallBlock,
+  turnMemory,
 } from "../src/memory.ts";
 import { eventsPrompt, LATE_NIGHT_HINT, nowLine, systemPrompt } from "../src/prompt.ts";
 import type { TurnContext } from "../src/tools.ts";
@@ -71,18 +70,29 @@ describe("memory checks", () => {
     ).toContain("copied exactly");
   });
 
-  it("refuses a one-off request as a preference", () => {
+  it("a preference needs no 「以后」, only the owner's words (ADR 0101)", () => {
+    const t = turn("报告别超过三行");
+    expect(
+      opProblem(
+        { action: "add", kind: "owner", content: "报告三行以内", evidence: "报告别超过三行" },
+        t,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("a lesson needs none of the owner's words, and stays out of their mouth", () => {
+    const t = turn("这个忽略吧，这个 issue 里面其实有 PR，只不过被拒绝了");
     expect(
       opProblem(
         {
           action: "add",
-          kind: "owner",
-          content: "主人关心 pi-desktop",
-          evidence: "帮我看下 pi-desktop 的 issue",
+          kind: "experience",
+          content: "推荐 issue 前，开着的和被关掉的 PR 都要看",
+          evidence: "我只看了开着的 PR，漏了被拒绝的",
         },
-        said,
+        t,
       ),
-    ).toContain("did not say this lasts");
+    ).toBeUndefined();
   });
 
   it("refuses questions and ifs", () => {
@@ -272,37 +282,28 @@ describe("dates (ADR 0038)", () => {
   });
 });
 
-describe("snapshot and recall", () => {
-  it("the snapshot shows owner entries and notes with how full they are", () => {
+describe("memory for one turn (ADR 0101)", () => {
+  it("brings the profile card and what fits the turn, nothing else", async () => {
     const store = Store.open(":memory:");
-    expect(memorySnapshot(store.memory)).toBe("");
+    expect(await turnMemory(store.memory, "让小王看看 pi-desktop")).toBe("");
     store.memory.write(
       [
-        { op: "add", kind: "owner", abstract: "报告用中文" },
-        { op: "add", kind: "person", abstract: "小王负责前端" },
-      ],
-      { actor: "herder", source: "said" },
-    );
-    const snap = memorySnapshot(store.memory);
-    expect(snap).toContain("用量 5/1375 字");
-    expect(snap).toMatch(/报告用中文 \(记于 \d{4}-\d{2}-\d{2}\)/);
-    expect(snap).not.toContain("小王");
-  });
-
-  it("recall finds non-resident entries for a message", async () => {
-    const store = Store.open(":memory:");
-    store.memory.write(
-      [
+        { op: "add", kind: "profile", abstract: "称呼：火哥" },
         { op: "add", kind: "person", abstract: "小王负责 pi-desktop 前端" },
-        { op: "add", kind: "owner", abstract: "pi-desktop 报告用中文" },
+        { op: "add", kind: "experience", abstract: "推荐 pi-desktop 的 issue 前先看被拒的 PR" },
+        { op: "add", kind: "owner", abstract: "报告用中文" },
       ],
       { actor: "herder", source: "said" },
     );
-    const block = await recallBlock(store.memory, "让小王看看 pi-desktop");
-    expect(block).toContain("[记忆召回");
-    expect(block).toMatch(/小王负责 pi-desktop 前端 \(记于 \d{4}-\d{2}-\d{2}\)/);
+    const block = await turnMemory(store.memory, "让小王看看 pi-desktop");
+    expect(block).toMatch(/^\[记忆召回 · 只在这一轮带着；/);
+    expect(block).toMatch(/主人画像：\n- \[\w+\] 称呼：火哥 \(记于 \d{4}-\d{2}-\d{2}\)/);
+    expect(block).toMatch(/跟这一轮有关的：\n[\s\S]*小王负责 pi-desktop 前端/);
+    expect(block).toMatch(/推荐 pi-desktop 的 issue 前先看被拒的 PR \(记于 [\d-]+\) · 经验/);
     expect(block).not.toContain("报告用中文");
-    expect(await recallBlock(store.memory, "天气")).toBe("");
+    const quiet = await turnMemory(store.memory, "天气");
+    expect(quiet).toContain("称呼：火哥");
+    expect(quiet).not.toContain("跟这一轮有关的");
   });
 });
 
@@ -312,10 +313,10 @@ afterEach(() => {
   faux = [];
 });
 
-describe("Herder with memory", () => {
-  it("puts memory in the system prompt, adds recall, and refreshes after a long pause", async () => {
+describe("Herder with memory (ADR 0101)", () => {
+  it("keeps memory out of the system prompt and brings it with each turn only", async () => {
     const store = Store.open(":memory:");
-    store.memory.write([{ op: "add", kind: "owner", abstract: "主人希望报告三行以内" }], {
+    store.memory.write([{ op: "add", kind: "owner", abstract: "主人周末不看工作消息" }], {
       actor: "herder",
       source: "said",
     });
@@ -325,20 +326,20 @@ describe("Herder with memory", () => {
     });
     const registration = registerFauxProvider();
     faux.push(registration);
-    const { host } = fakeHost({ memory: store.memory });
-    let now = 1_000_000;
+    const { host, rec } = fakeHost({ memory: store.memory });
     const herder = new Herder({
       host,
       model: registration.getModel(),
       streamFn: streamSimple,
       sleep: async () => {},
-      now: () => now,
+      now: () => 1_000_000,
     });
-    const systems: string[] = [];
-    const lasts: string[] = [];
+    const seen: { system: string; messages: string[] }[] = [];
     const see = (context: { systemPrompt?: string; messages: unknown[] }) => {
-      systems.push(JSON.stringify(context.systemPrompt ?? context.messages[0]));
-      lasts.push(JSON.stringify(context.messages.at(-1)));
+      seen.push({
+        system: JSON.stringify(context.systemPrompt ?? context.messages[0]),
+        messages: context.messages.map((m) => JSON.stringify(m)),
+      });
     };
     registration.setResponses([
       (context) => {
@@ -364,33 +365,75 @@ describe("Herder with memory", () => {
         see(context as never);
         return fauxAssistantMessage("好。");
       },
-      (context) => {
-        see(context as never);
-        return fauxAssistantMessage("好。");
-      },
     ]);
     herder.ownerMessage("以后默认用 kimi，小王那边的前端呢");
     await herder.idle();
-    expect(systems[0]).toContain("主人希望报告三行以内");
-    expect(lasts[0]).toContain("小王负责前端");
-    expect(lasts[0]).toContain(nowLine(1_000_000).slice(0, 12)); // every message carries the time
-    expect(store.memory.list({ kinds: ["owner"] }).map((r) => r.abstract)).toContain(
-      "主人默认用 kimi",
+    const first = seen[0];
+    if (first === undefined) throw new Error("no request");
+    expect(first.system).not.toContain("主人周末不看工作消息");
+    expect(first.system).not.toContain("小王负责前端");
+    const asked = first.messages.at(-1) ?? "";
+    expect(asked).toContain("[记忆召回 · 只在这一轮带着");
+    expect(asked).toContain("小王负责前端");
+    expect(asked).toContain(nowLine(1_000_000).slice(0, 12)); // every message carries the time
+    // Taken out once the turn is over: never saved.
+    expect(JSON.stringify(rec.log)).not.toContain("记忆召回 · 只在这一轮");
+    expect(JSON.stringify(rec.log)).toContain("以后默认用 kimi，小王那边的前端呢");
+
+    herder.ownerMessage("kimi 现在怎么样");
+    await herder.idle();
+    const second = seen[1];
+    if (second === undefined) throw new Error("no second request");
+    expect(second.system).toBe(first.system); // the cached prefix stays the same
+    const earlier = second.messages.find((m) => m.includes("小王那边的前端呢")) ?? "";
+    expect(earlier).not.toContain("记忆召回 · 只在这一轮");
+    // What was saved in the first turn comes with the second, which is about it.
+    expect(second.messages.at(-1)).toContain("主人默认用 kimi");
+  });
+
+  it("a timer's turn brings memory about its job too", async () => {
+    const store = Store.open(":memory:");
+    store.memory.write(
+      [
+        {
+          op: "add",
+          kind: "experience",
+          abstract: "推荐 PI-Desktop 的 issue 前，被拒的 PR 也要看",
+        },
+      ],
+      { actor: "herder", source: "noticed" },
     );
-
-    herder.ownerMessage("还有吗");
+    const registration = registerFauxProvider();
+    faux.push(registration);
+    const { host } = fakeHost({ memory: store.memory });
+    const herder = new Herder({
+      host,
+      model: registration.getModel(),
+      streamFn: streamSimple,
+      sleep: async () => {},
+    });
+    let asked = "";
+    registration.setResponses([
+      (context) => {
+        asked = JSON.stringify(context.messages.at(-1));
+        return fauxAssistantMessage("[quiet]");
+      },
+    ]);
+    herder.scheduled({
+      id: "t1",
+      about: "PI-Desktop 新 issue 早查",
+      prompt: "看看 PI-Desktop 有没有好上手的新 issue",
+      when: { kind: "daily", at: "09:30" },
+      paused: false,
+      createdAt: new Date(0).toISOString(),
+    });
     await herder.idle();
-    expect(systems[1]).not.toContain("主人默认用 kimi"); // frozen for the prompt cache
-
-    now += MEMORY_REFRESH_MS;
-    herder.ownerMessage("在吗");
-    await herder.idle();
-    expect(systems[2]).toContain("主人默认用 kimi");
+    expect(asked).toContain("被拒的 PR 也要看");
   });
 });
 
-describe("Herder review trigger", () => {
-  it("queues one review after enough owner messages", async () => {
+describe("Herder review trigger (ADR 0101)", () => {
+  it("queues one review once enough of the conversation came in", async () => {
     const store = Store.open(":memory:");
     const registration = registerFauxProvider();
     faux.push(registration);
@@ -401,14 +444,15 @@ describe("Herder review trigger", () => {
       streamFn: streamSimple,
       sleep: async () => {},
     });
-    registration.setResponses(
-      Array.from({ length: REVIEW_EVERY_TURNS * 2 }, () => () => fauxAssistantMessage("好。")),
-    );
-    for (let i = 0; i < REVIEW_EVERY_TURNS * 2; i++) {
-      herder.ownerMessage(`消息 ${i}`);
-      await herder.idle();
-    }
-    // The first review is still waiting, so the second batch adds none.
+    registration.setResponses(Array.from({ length: 3 }, () => () => fauxAssistantMessage("好。")));
+    herder.ownerMessage("短的一句");
+    await herder.idle();
+    expect(store.memory.jobs()).toEqual([]); // waits for more, or for a quiet spell
+    herder.ownerMessage("长".repeat(REVIEW_TOKENS));
+    await herder.idle();
+    herder.ownerMessage("长".repeat(REVIEW_TOKENS));
+    await herder.idle();
+    // The first review is still waiting, so the second adds none.
     expect(store.memory.jobs().map((j) => j.kind)).toEqual(["review"]);
     await herder.stop();
   });
@@ -450,7 +494,7 @@ describe("decisions (ADR 0057)", () => {
     ).toContain("question");
   });
 
-  it("decisions sit in the system prompt and go to every new task with the quote and the day", async () => {
+  it("decisions come with the turns about them and go to every new task with the quote and the day", async () => {
     const { store, call } = setupTools("AgentHerd 以后直接推 main，不用开 PR");
     const reply = await call("memory", {
       operations: [
@@ -463,9 +507,9 @@ describe("decisions (ADR 0057)", () => {
       ],
     });
     expect(reply).toContain("saved");
-    const snapshot = memorySnapshot(store.memory);
-    expect(snapshot).toContain("[记忆 · 定了的事");
-    expect(snapshot).toContain("原话：「AgentHerd 以后直接推 main，不用开 PR」");
+    const block = await turnMemory(store.memory, "AgentHerd 的改动推 main 吗");
+    expect(block).toContain("原话：「AgentHerd 以后直接推 main，不用开 PR」 (记于");
+    expect(block).toContain("· 定了的事");
     expect(decisionsText(store.memory)).toMatch(
       /^负责人定了的事.*\n- AgentHerd 仓库的改动直接推 main，不开 PR 原话：「AgentHerd 以后直接推 main，不用开 PR」 \(记于 \d{4}-\d{2}-\d{2}\)$/,
     );
@@ -559,20 +603,20 @@ describe("the owner's profile card (ADR 0091)", () => {
     ).toBeUndefined();
   });
 
-  it("the snapshot puts the card first", () => {
+  it("every turn brings the card first (ADR 0101)", async () => {
     const store = Store.open(":memory:");
     const meta = { actor: "owner", source: "owner_edit" } as const;
     store.memory.write([{ op: "add", kind: "owner", abstract: "报告用中文" }], meta);
     store.memory.write([{ op: "add", kind: "profile", abstract: "称呼：火哥" }], meta);
-    const snap = memorySnapshot(store.memory);
-    expect(snap.indexOf("[记忆 · 主人画像")).toBe(0);
-    expect(snap).toContain("用量 5/600 字");
-    expect(snap.indexOf("称呼：火哥")).toBeLessThan(snap.indexOf("报告用中文"));
+    const block = await turnMemory(store.memory, "报告用什么语言");
+    expect(block.indexOf("称呼：火哥")).toBeGreaterThan(0);
+    expect(block.indexOf("称呼：火哥")).toBeLessThan(block.indexOf("报告用中文"));
   });
 
-  it("the prompt tells the Herder to call the owner by the card's 称呼 and keep the card", () => {
+  it("the prompt tells the Herder to call the owner by the card's 称呼 and when to save", () => {
     const system = systemPrompt("zh-CN");
-    expect(system).toContain("[记忆 · 主人画像] is the owner's profile card");
-    expect(system).toContain("no 「以后」");
+    expect(system).toContain("主人画像 is the owner's profile card");
+    expect(system).toContain("Each turn ends with [记忆召回]");
+    expect(system).toContain("keep that lesson as experience in the same turn");
   });
 });

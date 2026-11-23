@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { momentText, nextText, type Schedule, whenText } from "../src/renderer/src/schedule-text";
+import { momentText, nextText, whenText } from "../src/renderer/src/schedule-text";
 
 describe("whenText", () => {
   it("says when a schedule runs in Chinese", () => {
@@ -13,19 +13,13 @@ describe("whenText", () => {
 });
 
 describe("nextText", () => {
-  const base: Schedule = {
-    id: "s1",
-    about: "看新 issue",
-    prompt: "看看有没有新 issue",
-    when: { kind: "daily", at: "09:00" },
-    paused: false,
-    createdAt: "2026-11-10T00:00:00.000Z",
-  };
+  const base = { paused: false };
 
   it("shows the next run in local time, or that it is paused", () => {
     const next = new Date(2026, 10, 11, 9, 0).toISOString();
     expect(momentText(next)).toBe("11月11日 09:00");
     expect(nextText({ ...base, nextAt: next })).toBe("下次：11月11日 09:00");
     expect(nextText({ ...base, paused: true })).toBe("已暂停");
+    expect(nextText(base)).toBe("已结束");
   });
 });

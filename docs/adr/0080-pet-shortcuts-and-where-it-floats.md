@@ -21,7 +21,8 @@
 
 1. **Two global shortcuts, set in 设置 → 桌宠.**
    - 和主管说话, default ⇧⌘空格 (Ctrl+Shift+Space): opens the pet's conversation with the cursor in
-     the input, from any app. With the pet turned off it opens the app.
+     the input, from any app. A second press while on the conversation closes the panel but
+     keeps the pet and any unsent draft. With the pet turned off it opens the app.
    - 同意最早的那件事, default ⇧⌘Y (Ctrl+Shift+Y): the first press opens the pet on 卡片, marks the
      oldest approval still open and says above the input 「再按一次 ⇧⌘Y 同意：…」; a second press
      within 5 seconds allows exactly that one. A late second press, or one after another approval

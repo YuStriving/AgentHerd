@@ -67,6 +67,13 @@ jobs:
         with:
           path: ${{ runner.temp }}/electron-cache
           key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Smoke test the documented desktop start from a missing Electron binary
+        if: runner.os == 'Windows'
+        timeout-minutes: 6
+        shell: pwsh
+        env:
+          electron_config_cache: ${{ runner.temp }}/electron-cache
+        run: ./scripts/windows-desktop-smoke.ps1
       - name: Install Electron binary
         env:
           electron_config_cache: ${{ runner.temp }}/electron-cache

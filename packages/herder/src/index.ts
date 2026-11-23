@@ -34,9 +34,8 @@ export {
 export {
   Herder,
   type HerderOptions,
-  MEMORY_REFRESH_MS,
-  REVIEW_EVERY_TURNS,
   REVIEW_IDLE_MS,
+  REVIEW_TOKENS,
 } from "./herder.ts";
 export {
   failedStream,
@@ -54,6 +53,7 @@ export {
 } from "./logins.ts";
 export {
   checkPublic,
+  githubIssueOf,
   htmlToText,
   isPrivateAddress,
   LOOKUP_TOOL_NAMES,
@@ -61,20 +61,23 @@ export {
   type LookupOptions,
   lookupTools,
 } from "./lookup.ts";
+export { actFrom, mailboxTools, sourceConfig, sourceLine, whenFrom } from "./mailbox-tools.ts";
 export {
   HERDER_KINDS,
   LESSONS_MAX,
   lessonsText,
   MAX_OPS,
-  memorySnapshot,
   memoryTools,
   opProblem,
   pastLessons,
   RECALL_KINDS,
   RECALL_MAX_CHARS,
   RECALL_MAX_HITS,
-  recallBlock,
+  RECALL_MIN_SCORE,
+  RECALL_QUERY_CHARS,
   type ToolOp,
+  TURN_MEMORY_HEADING,
+  turnMemory,
 } from "./memory.ts";
 export {
   CASE_INPUT_CHARS,
@@ -88,6 +91,7 @@ export {
   REVIEW_TURNS,
   WORKER_POLL_MS,
 } from "./memory-jobs.ts";
+export { createModelFetch, modelFetch, type ProxyEnv } from "./model-fetch.ts";
 export {
   type ModelTiers,
   placeModels,
@@ -142,11 +146,19 @@ export {
   HERDER_LABEL,
   OWNER_LABEL,
   QUIET,
+  quietReply,
   quoteAgent,
   systemPrompt,
   VOICE_REPLY_MAX,
   voicePrompt,
 } from "./prompt.ts";
+export {
+  asksForQuiet,
+  QUIET_CHECK_MAX_TOKENS,
+  QUIET_CHECK_TIMEOUT_MS,
+  type QuietCheckRequest,
+  shouldStayQuiet,
+} from "./quiet-check.ts";
 export { STYLE_SOURCE, stylePrompt, withoutEndPeriods } from "./style.ts";
 export {
   filterSuggestion,

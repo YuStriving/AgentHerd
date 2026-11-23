@@ -19,6 +19,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { modelFetch } from "./model-fetch.ts";
 
 /** Field on a resolved model naming the subscription service it belongs to. Agents read it too. */
 export const LOGIN_FIELD = "agentherdLogin";
@@ -270,8 +271,17 @@ export function loginStream(
   options?: SimpleStreamOptions,
 ) => ReturnType<typeof streamSimple> | Promise<ReturnType<typeof streamSimple>> {
   return async (model, context, options) => {
+    // Every model request of the Herder and its tasks goes through the system proxy when there
+    // is one (ADR 0098).
+    let doFetch: typeof fetch;
+    try {
+      doFetch = options?.fetch ?? modelFetch();
+    } catch (error) {
+      return failedStream(model, (error as Error).message);
+    }
+    const requested = { ...options, fetch: doFetch };
     const id = loginOf(model);
-    if (id === undefined) return streamSimple(model, context, options);
+    if (id === undefined) return streamSimple(model, context, requested);
     const service = services().find((s) => s.id === id);
     if (service === undefined) return failedStream(model, `no service "${id}"`);
     let auth: ModelAuth;
@@ -280,7 +290,7 @@ export function loginStream(
     } catch (error) {
       return failedStream(model, `sign-in of "${id}" failed: ${(error as Error).message}`);
     }
-    const signed = withAuth(model, options, auth);
+    const signed = withAuth(model, requested, auth);
     return streamSimple(signed.model, context, signed.options);
   };
 }

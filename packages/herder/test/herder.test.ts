@@ -692,13 +692,14 @@ describe("Herder schedules (ADR 0055)", () => {
   };
 
   it("a due schedule comes back as the owner's words and the reply is said", async () => {
-    const { herder, rec, faux } = setup({ schedules: [] });
+    const { herder, rec, faux } = setup({ mailbox: [] });
     const prompts: string[] = [];
     faux.setResponses([
       (context) => {
         prompts.push(JSON.stringify(context.messages.at(-1)?.content));
         return fauxAssistantMessage("今天有 2 个新 issue：#2201 和 #2203");
       },
+      fauxAssistantMessage("SEND"),
     ]);
     herder.scheduled(schedule);
     await herder.idle();
@@ -707,12 +708,56 @@ describe("Herder schedules (ADR 0055)", () => {
     expect(rec.said).toEqual(["今天有 2 个新 issue：#2201 和 #2203"]);
   });
 
+  it("code holds back a reply that goes against the owner's 「没有就不用说」 (ADR 0102)", async () => {
+    const { herder, rec, faux } = setup({ mailbox: [] });
+    const checks: string[] = [];
+    faux.setResponses([
+      fauxAssistantMessage("今天没有新的、好上手的 issue。要的话我可以把 #2405 起个任务"),
+      (context) => {
+        checks.push(JSON.stringify(context.messages));
+        return fauxAssistantMessage("QUIET");
+      },
+    ]);
+    herder.scheduled(schedule);
+    await herder.idle();
+    expect(rec.said).toEqual([]);
+    expect(checks[0]).toContain("SEND or QUIET");
+    expect(checks[0]).toContain("没有就不用说");
+    expect(rec.audits.some((a) => a.type === "schedule.quiet" && a.data.by === "check")).toBe(true);
+  });
+
+  it("asks nothing more when the owner never said when to keep quiet", async () => {
+    const { herder, rec, faux } = setup({ mailbox: [] });
+    let requests = 0;
+    faux.setResponses([
+      () => {
+        requests++;
+        return fauxAssistantMessage("今天没有新 issue");
+      },
+      () => {
+        requests++;
+        return fauxAssistantMessage("QUIET");
+      },
+    ]);
+    herder.scheduled({ ...schedule, prompt: "看看 PI-Desktop 有没有新 issue" });
+    await herder.idle();
+    expect(rec.said).toEqual(["今天没有新 issue"]);
+    expect(requests).toBe(1);
+  });
+
   it("[quiet] says nothing, and a schedule cannot make another", async () => {
     const schedules: never[] = [];
-    const { herder, rec, faux } = setup({ schedules });
+    const { herder, rec, faux } = setup({ mailbox: schedules });
     faux.setResponses([
       fauxAssistantMessage(
-        [fauxToolCall("schedule_add", { about: "x", prompt: "y", kind: "every", hours: 1 })],
+        [
+          fauxToolCall("mailbox_add", {
+            kind: "timer",
+            name: "x",
+            note: "y",
+            config: { when: { kind: "every", hours: 1 } },
+          }),
+        ],
         { stopReason: "toolUse" },
       ),
       fauxAssistantMessage(QUIET),

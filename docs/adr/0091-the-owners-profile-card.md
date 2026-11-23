@@ -1,6 +1,6 @@
 # 0091. The owner's profile card, and a first run that asks a name and a figure
 
-- Status: Accepted
+- Status: Accepted; changed by [0101](0101-memory-comes-with-each-turn.md) (the card comes with every turn instead of the system prompt)
 - Date: 2026-11-20
 - Changes: [0038](0038-herder-memory.md) (a new resident kind `profile`; reviews may write it),
   [0070](0070-a-desktop-pet.md) (the figure is picked in the first run)

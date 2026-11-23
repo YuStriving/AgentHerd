@@ -20,6 +20,12 @@ const run: ProxyQuery = (command, args) =>
 
 const SETTINGS = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
 
+/**
+ * Where this computer reaches a service without a proxy: the model gateway the owner uses is
+ * abroad, deepseek and this machine are not (ADR 0098).
+ */
+export const NO_PROXY_DEFAULT = "localhost,127.0.0.1,::1,[::1],api.deepseek.com";
+
 /** The proxy URL in `reg query <Internet Settings>` output, when it is on. */
 export function windowsProxy(output: string): string | undefined {
   const value = (name: string): string | undefined =>
@@ -57,7 +63,12 @@ export function withSystemProxy(
   platform: NodeJS.Platform = process.platform,
   query: ProxyQuery = run,
 ): NodeJS.ProcessEnv {
-  if (envValue(env, "HTTPS_PROXY") || envValue(env, "HTTP_PROXY")) return env;
+  const noProxy = envValue(env, "NO_PROXY");
+  if (envValue(env, "HTTPS_PROXY") || envValue(env, "HTTP_PROXY")) {
+    // A proxy the owner set: only the list of direct connections is filled in, so the services
+    // this computer reaches without one stay direct.
+    return noProxy === undefined ? { ...env, NO_PROXY: NO_PROXY_DEFAULT } : env;
+  }
   let proxy: string | undefined;
   try {
     if (platform === "win32") {
@@ -78,7 +89,7 @@ export function withSystemProxy(
     ...env,
     HTTPS_PROXY: proxy,
     HTTP_PROXY: proxy,
-    ...(envValue(env, "NO_PROXY") !== undefined ? {} : { NO_PROXY: "localhost,127.0.0.1,::1" }),
+    NO_PROXY: noProxy ?? NO_PROXY_DEFAULT,
     ...(envValue(env, "NODE_USE_ENV_PROXY") !== undefined ? {} : { NODE_USE_ENV_PROXY: "1" }),
   };
 }

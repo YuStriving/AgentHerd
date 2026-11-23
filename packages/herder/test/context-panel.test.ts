@@ -74,6 +74,30 @@ describe("what the Herder's requests are made of (ADR 0093)", () => {
     expect(snapshot.items.find((i) => i.part === "system")?.text).toContain("是主人的画像卡");
   });
 
+  it("counts a turn's memory as memory, apart from the owner's words (ADR 0101)", () => {
+    const snapshot = measureContext(
+      [
+        { role: "system", content: "你是主管。" } as never,
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "[Owner's message]\n小王那边呢\n\n[记忆召回 · 只在这一轮带着；仅供参考]\n主人画像：\n- 称呼：火哥",
+            },
+          ],
+          timestamp: 5,
+        } as never,
+      ],
+      128_000,
+    );
+    const owner = snapshot.items.find((i) => i.part === "owner");
+    const memory = snapshot.items.find((i) => i.part === "memory");
+    expect(owner?.text).toBe("[Owner's message]\n小王那边呢");
+    expect(memory?.label).toBe("这一轮的记忆");
+    expect(memory?.text).toMatch(/^\[记忆召回 · [\s\S]*称呼：火哥$/);
+  });
+
   it("counts a compress call and its receipt as a fold, since the model reads the summary there (ADR 0096)", () => {
     const summary = "m00002–m00040 三月发票\n- 发票都整理好了，存在 ~/发票/三月";
     const snapshot = measureContext(

@@ -9,12 +9,16 @@ import type {
   HerderContextParts,
   HerderFoldBy,
   HerderFoldState,
+  Letter,
+  LetterFate,
+  MailboxKind,
+  MailboxSource,
   MemoryRow,
   ModelRef,
   ModelRole,
   ModelService,
   ModelSettings,
-  Schedule,
+  ScheduleWhen,
   Task,
   TranscriptEntry,
 } from "@agentherd/core";
@@ -35,6 +39,12 @@ export type {
   HerderContextParts,
   HerderFoldBy,
   HerderFoldState,
+  Letter,
+  LetterFate,
+  MailboxAct,
+  MailboxKind,
+  MailboxSource,
+  ScheduleWhen,
 } from "@agentherd/core";
 
 export const API_VERSION = 1;
@@ -799,13 +809,6 @@ export interface AppsView {
   apps: AppView[];
 }
 
-/** What the Herder does at set times, for the 定时任务 page (ADR 0055). */
-export interface SchedulesView {
-  schedules: Schedule[];
-  /** False while AgentHerd is not following tasks (no herd): nothing to show or change. */
-  ready: boolean;
-}
-
 /** Chinese platforms AgentHerd can use with the owner's own account (ADR 0058). */
 export type SocialPlatform = "xiaohongshu" | "zhihu";
 
@@ -842,7 +845,7 @@ export interface SocialView {
   account?: string;
   /** Something the owner should know, in Chinese. */
   problem?: string;
-  /** What the watch tells the owner about (ADR 0058 defaults: mentions on, the rest off). */
+  /** What reaches the Herder: mentions while a social source in the mailbox looks (ADR 0100). */
   watch: Record<SocialKind, boolean>;
   /** The last look for new notices (ISO). */
   checkedAt?: string;
@@ -856,17 +859,16 @@ export interface SocialLoginCode {
   signedIn: boolean;
 }
 
-/** One thing AgentHerd watches, for the 应用连接 page (ADR 0058). */
+/** A pull request a task opened that AgentHerd keeps an eye on (ADR 0058); the rest is in the mailbox. */
 export interface WatchView {
-  /** `pr:<repo>#<n>`, `mail:<id>`, `intake:<id>`, `social:<platform>:<kind>`. */
+  /** `pr:<repo>#<n>`. */
   id: string;
-  kind: "pr" | "mail" | "intake" | "social";
+  kind: "pr";
   /** What it watches, in the owner's words where there are some. */
   title: string;
   /** One line: how, how often. */
   detail: string;
   paused: boolean;
-  /** Social watches are switched, not removed. */
   removable: boolean;
   createdAt?: string;
   /** Last news from it (ISO). */
@@ -955,6 +957,91 @@ export interface PluginPatch {
   keys?: Record<string, string>;
 }
 
+// --- 信箱 (ADR 0099, 0100) ---------------------------------------------------------------------
+
+/** What the owner fills in for a source; the host turns it into the source's config. */
+export interface MailboxFields {
+  /** github and work: owner/name or the repository's address. */
+  repo?: string;
+  /** github: what to look at (default issues and releases); work: assigned and/or reviews. */
+  what?: ("issues" | "prs" | "releases" | "assigned" | "reviews")[];
+  /** rss: the feed's address. */
+  url?: string;
+  /** github and rss: keep only items with one of these words; hn: the words to search. */
+  words?: string;
+  /** hn: only stories with at least this many points. */
+  points?: number;
+  /** script: the command line and the folder it runs in. */
+  command?: string;
+  cwd?: string;
+  /** work: only items with this label. */
+  label?: string;
+  /** mail: a Gmail search. */
+  query?: string;
+  /** social: whose notices. */
+  platform?: SocialPlatform;
+  /** timer: when it runs. */
+  when?: ScheduleWhen;
+}
+
+/** What a source does with a new letter: the Herder sorts it, it is offered, or work starts. */
+export type MailboxActChoice = "sort" | "offer" | "auto";
+
+export interface MailboxDraft extends MailboxFields {
+  kind: MailboxKind;
+  name: string;
+  /** One sentence for the Herder: what the owner cares about here. A timer's job. */
+  note?: string;
+  everyMinutes?: number;
+  act?: MailboxActChoice;
+}
+
+export interface MailboxSourcePatch {
+  name?: string;
+  note?: string;
+  everyMinutes?: number;
+  paused?: boolean;
+  act?: MailboxActChoice;
+  /** false ends an automatic source's trial run. */
+  trial?: boolean;
+  /** New fields: the source starts over with a first look that only remembers what is there. */
+  fields?: MailboxFields;
+}
+
+/** A letter as the 信箱 page shows it: where it came from and what the Herder made of it. */
+export interface MailboxLetterView {
+  id: number;
+  sourceId: string;
+  /** The source's own id for it (issue:901, a feed's guid…): the same id never comes twice. */
+  letterId: string;
+  source: string;
+  kind: MailboxKind;
+  at: string;
+  title: string;
+  body: string;
+  link?: string;
+  /** Handed to the Herder; until then it waits (the Herder is busy or not running). */
+  sentAt?: string;
+  fate?: LetterFate;
+  why?: string;
+  filedAt?: string;
+  digestedAt?: string;
+}
+
+/** A source as the 信箱 page shows it; a timer also says when it runs next. */
+export type MailboxSourceView = MailboxSource & { nextAt?: string };
+
+export interface MailboxView {
+  /** False while AgentHerd is not running: nothing can be added or looked at. */
+  on: boolean;
+  sources: MailboxSourceView[];
+  letters: MailboxLetterView[];
+  /** How often each kind is looked at: the least and the default, in minutes. */
+  every: Record<MailboxKind, { min: number; default: number }>;
+  /** The hour the morning digest goes out. */
+  digestHour: number;
+}
+
 export interface HostApi {
   status(): HostStatus;
   tasks(): TasksView;
@@ -984,10 +1071,6 @@ export interface HostApi {
    * first-run guide), the value waits in config.json and is written when it starts.
    */
   setProfile(field: ProfileFieldName, value: string): OwnerProfile;
-  /** Schedules are made in chat; the app shows them and can pause or remove one. */
-  schedules(): SchedulesView;
-  setSchedulePaused(id: string, paused: boolean): SchedulesView;
-  removeSchedule(id: string): SchedulesView;
   providers(): ProviderView[];
   models(): ModelsView;
   /** Adds or replaces a service. `key`: undefined keeps the saved key, "" removes it. */
@@ -1089,9 +1172,30 @@ export interface HostApi {
   installPlugin(source: string, keys: Record<string, string>): Promise<PluginView[]>;
   setPlugin(id: string, patch: PluginPatch): Promise<PluginView[]>;
   removePlugin(id: string): Promise<PluginView[]>;
+  /** The single WeCom office account, not a control channel. */
+  wecom(): Promise<WecomView>;
+  startWecomLogin(): Promise<WecomView>;
+  cancelWecomLogin(): Promise<WecomView>;
+  disconnectWecom(): Promise<WecomView>;
+  /** 信箱 (ADR 0099): the sources and the newest letters with what the Herder made of them. */
+  mailbox(): MailboxView;
+  mailboxAdd(draft: MailboxDraft): Promise<MailboxView>;
+  mailboxSet(id: string, patch: MailboxSourcePatch): Promise<MailboxView>;
+  mailboxRemove(id: string): Promise<MailboxView>;
+  /** Looks at a source now and hands what came to the Herder. */
+  mailboxRun(id: string): Promise<MailboxView>;
+  /** One look without keeping anything: what the source would bring now. */
+  mailboxTry(draft: MailboxDraft): Promise<Letter[]>;
 }
 
 export type HostMethod = keyof HostApi;
+
+export interface WecomView {
+  state: "disconnected" | "connecting" | "connected" | "failed";
+  qr?: string;
+  error?: string;
+  capabilities: { id: string; name: string; toolCount: number }[];
+}
 
 export const HOST_METHODS: readonly HostMethod[] = [
   "status",
@@ -1107,9 +1211,6 @@ export const HOST_METHODS: readonly HostMethod[] = [
   "setProfile",
   "forgetMemory",
   "restoreMemory",
-  "schedules",
-  "setSchedulePaused",
-  "removeSchedule",
   "providers",
   "models",
   "putService",
@@ -1174,6 +1275,16 @@ export const HOST_METHODS: readonly HostMethod[] = [
   "installPlugin",
   "setPlugin",
   "removePlugin",
+  "wecom",
+  "startWecomLogin",
+  "cancelWecomLogin",
+  "disconnectWecom",
+  "mailbox",
+  "mailboxAdd",
+  "mailboxSet",
+  "mailboxRemove",
+  "mailboxRun",
+  "mailboxTry",
 ];
 
 export type HostEvent =
@@ -1190,7 +1301,8 @@ export type HostEvent =
   | { topic: "danjuan"; data: DanjuanView }
   | { topic: "login"; data: LoginView }
   | { topic: "pet"; data: PetView }
-  | { topic: "plugins"; data: PluginView[] };
+  | { topic: "plugins"; data: PluginView[] }
+  | { topic: "mailbox"; data: MailboxView };
 
 /** The same API, asynchronous, as seen by a client. */
 export type RemoteHost = {

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { DEFAULT_NOTICE_LEVELS, type IntakeWatch, type Schedule, Store } from "@agentherd/core";
+import { DEFAULT_NOTICE_LEVELS, type MailboxSource, Store } from "@agentherd/core";
 import { describe, expect, it } from "vitest";
 import { placeModels, type TierPlacement } from "../src/model-guide.ts";
 import { CONTEXT_LABEL, composeTaskPrompt, OWNER_LABEL, quoteAgent } from "../src/prompt.ts";
@@ -788,77 +788,89 @@ describe("projects without asking (ADR 0043)", () => {
   });
 });
 
-describe("mail watches (ADR 0048)", () => {
-  it("exist only with connected apps", () => {
-    expect(tools({}).names).not.toContain("mail_watch");
-    expect(tools({}, { mail: [] }).names).toEqual(
-      expect.arrayContaining(["mail_watch", "mail_unwatch"]),
-    );
-  });
-
-  it("start and stop when the owner asks, and show in session_list", async () => {
-    const mail: never[] = [];
-    const { call } = tools({}, { mail });
-    const out = await call("mail_watch", { about: "导师的邮件", query: "from:li@uni.edu" });
-    expect(out).toContain('"导师的邮件"');
-    const list = await call("session_list", {});
-    expect(list).toContain('"导师的邮件" query=from:li@uni.edu');
-    expect(await call("mail_unwatch", { watch: "导师" })).toContain("stopped");
-    expect(mail).toEqual([]);
-    await expect(call("mail_unwatch", { watch: "导师" })).rejects.toThrow(/no mail watch/);
-  });
-
-  it("are never started by an event", async () => {
-    const mail: never[] = [];
-    const { call } = tools({ kind: "event" }, { mail });
-    await expect(call("mail_watch", { about: "all", query: "in:inbox" })).rejects.toThrow(
-      /only the owner/,
-    );
-    expect(mail).toEqual([]);
-  });
-});
-
-describe("new-work watches (ADR 0052)", () => {
-  it("exist only with GitHub, and start and stop when the owner asks", async () => {
-    expect(tools({}).names).not.toContain("intake_watch");
-    const intake: never[] = [];
-    const { call, names } = tools({}, { intake });
-    expect(names).toEqual(expect.arrayContaining(["intake_watch", "intake_unwatch"]));
-    const out = await call("intake_watch", {
-      kind: "issues",
-      repo: "acme/app",
-      about: "acme 的 bug",
-    });
-    expect(out).toContain('"acme 的 bug" (new items are offered to the owner)');
-    expect(await call("session_list", {})).toContain(
-      '"acme 的 bug" kind=issues repo=acme/app auto=false',
-    );
-    await expect(call("intake_watch", { kind: "bugs" })).rejects.toThrow(/issues" or "reviews/);
-    expect(await call("intake_unwatch", { watch: "acme" })).toContain("stopped");
-    expect(intake).toEqual([]);
-  });
-
-  it("are never made by an event or by the work they offer", async () => {
-    for (const kind of ["event", "intake"] as const) {
-      const intake: never[] = [];
-      const { call } = tools({ kind }, { intake });
-      await expect(call("intake_watch", { kind: "issues", auto: true })).rejects.toThrow(
-        /only the owner/,
-      );
-      expect(intake).toEqual([]);
+describe("mail, GitHub work and 小红书 through the mailbox (ADR 0100)", () => {
+  it("the old watch tools are gone; the mailbox tools exist with a mailbox", () => {
+    for (const name of ["mail_watch", "intake_watch", "social_watch", "schedule_add"]) {
+      expect(tools({}, { mailbox: [] }).names).not.toContain(name);
     }
+    expect(tools({}).names).not.toContain("mailbox_add");
+    expect(tools({}, { mailbox: [] }).names).toEqual(
+      expect.arrayContaining(["mailbox_add", "mailbox_change", "mailbox_remove", "mailbox_list"]),
+    );
   });
 
-  it("start automatic watches on a trial run the owner ends (ADR 0064)", async () => {
-    const intake: IntakeWatch[] = [];
-    const { call } = tools({}, { intake });
-    const out = await call("intake_watch", { kind: "issues", repo: "acme/app", auto: true });
-    expect(out).toContain("automatic, on a trial run");
-    expect(await call("session_list", {})).toContain("auto=true (trial run, 0 item(s) so far)");
-    const released = await call("intake_watch", { kind: "issues", repo: "acme/app", trial: false });
-    expect(released).toContain("automatic: new items start a task by themselves");
-    expect(intake).toHaveLength(1);
-    expect(intake[0]?.trial).toBeUndefined();
+  it("mail is a source with a Gmail search, listed in session_list", async () => {
+    const mailbox: MailboxSource[] = [];
+    const { call } = tools({}, { mailbox });
+    const out = await call("mailbox_add", {
+      kind: "mail",
+      name: "导师的邮件",
+      note: "导师来邮件就告诉我",
+      config: { query: "from:li@uni.edu" },
+    });
+    expect(out).toContain('"导师的邮件" (mail');
+    expect(mailbox[0]).toMatchObject({
+      kind: "mail",
+      act: "sort",
+      config: { query: "from:li@uni.edu" },
+    });
+    expect(await call("session_list", {})).toContain('"导师的邮件" (mail, every 10 min');
+    await expect(
+      call("mailbox_add", { kind: "mail", name: "x", note: "y", config: {} }),
+    ).rejects.toThrow(/Gmail search/);
+    expect(await call("mailbox_remove", { source: "导师" })).toContain("removed");
+    expect(mailbox).toEqual([]);
+  });
+
+  it("GitHub work is offered by default and an automatic source starts on a trial run the owner ends (ADR 0064)", async () => {
+    const mailbox: MailboxSource[] = [];
+    const { call } = tools({}, { mailbox });
+    await call("mailbox_add", {
+      kind: "work",
+      name: "acme 的 bug",
+      note: "指派给我的 acme bug",
+      config: { what: ["assigned"], repo: "acme/app", label: "bug" },
+    });
+    expect(mailbox[0]).toMatchObject({
+      act: "offer",
+      config: { what: ["assigned"], repo: "acme/app", label: "bug" },
+    });
+    expect(await call("mailbox_change", { source: "acme", act: "auto" })).toContain(
+      "auto, on a trial run",
+    );
+    expect(mailbox[0]?.act).toBe("trial");
+    expect(await call("mailbox_change", { source: "acme", trial: false })).toContain("auto,");
+    expect(mailbox[0]?.act).toBe("auto");
+    await expect(
+      call("mailbox_add", { kind: "work", name: "x", note: "y", config: { what: ["issues"] } }),
+    ).rejects.toThrow(/assigned/);
+  });
+
+  it("小红书 comments and @ are a social source", async () => {
+    const mailbox: MailboxSource[] = [];
+    const { call } = tools({}, { mailbox });
+    await call("mailbox_add", {
+      kind: "social",
+      name: "小红书的评论和@",
+      note: "有人评论或 @ 我就告诉我",
+      config: { platform: "xiaohongshu" },
+    });
+    expect(mailbox[0]).toMatchObject({ kind: "social", config: { platform: "xiaohongshu" } });
+    expect(await call("mailbox_change", { source: "小红书", paused: true })).toContain("paused");
+    await expect(
+      call("mailbox_add", { kind: "social", name: "x", note: "y", config: { platform: "weibo" } }),
+    ).rejects.toThrow();
+  });
+
+  it("only the owner adds, changes or removes a source", async () => {
+    for (const kind of ["event", "intake", "scheduled", "letters"] as const) {
+      const mailbox: MailboxSource[] = [];
+      const { call } = tools({ kind }, { mailbox });
+      await expect(
+        call("mailbox_add", { kind: "mail", name: "x", note: "y", config: { query: "in:inbox" } }),
+      ).rejects.toThrow(/only the owner/);
+      expect(mailbox).toEqual([]);
+    }
   });
 });
 
@@ -948,40 +960,67 @@ describe("allowed steps and trial runs (ADR 0064)", () => {
   });
 });
 
-describe("schedules (ADR 0055)", () => {
+describe("timers in the mailbox (ADR 0055, 0100)", () => {
   it("are made, listed, paused and removed when the owner asks", async () => {
-    expect(tools({}).names).not.toContain("schedule_add");
-    const schedules: Schedule[] = [];
-    const { call } = tools({}, { schedules });
-    const out = await call("schedule_add", {
-      about: "早上看新 issue",
-      prompt: "看看 ~/learnspace/PI-Desktop 有没有新 issue，没有就不用说",
-      kind: "daily",
-      at: "9:00",
-      days: [1, 2, 3, 4, 5],
+    const mailbox: MailboxSource[] = [];
+    const { call } = tools({}, { mailbox });
+    const out = await call("mailbox_add", {
+      kind: "timer",
+      name: "早上看新 issue",
+      note: "看看 ~/learnspace/PI-Desktop 有没有新 issue，没有就不用说",
+      config: { when: { kind: "daily", at: "9:00", days: [1, 2, 3, 4, 5] } },
     });
-    expect(out).toContain('"早上看新 issue" Mon, Tue, Wed, Thu, Fri at 09:00');
+    expect(out).toContain('"早上看新 issue" (timer, Mon, Tue, Wed, Thu, Fri at 09:00');
     expect(out).toContain("tell the owner");
-    expect(await call("session_list", {})).toContain('"早上看新 issue"');
-    await expect(call("schedule_add", { about: "x", prompt: "y", kind: "every" })).rejects.toThrow(
-      /every needs hours/,
-    );
-    expect(await call("schedule_change", { schedule: "早上", paused: true })).toContain("paused");
-    expect(schedules[0]?.paused).toBe(true);
-    expect(await call("schedule_remove", { schedule: "早上" })).toContain("removed");
-    expect(schedules).toEqual([]);
-    await expect(call("schedule_remove", { schedule: "早上" })).rejects.toThrow(/no schedule/);
+    expect(await call("session_list", {})).toContain('"早上看新 issue" (timer');
+    expect(
+      await call("mailbox_try", {
+        kind: "timer",
+        name: "x",
+        note: "y",
+        config: { when: { kind: "every", hours: 2 } },
+      }),
+    ).toContain("it would run");
+    await expect(
+      call("mailbox_add", {
+        kind: "timer",
+        name: "x",
+        note: "y",
+        config: { when: { kind: "every" } },
+      }),
+    ).rejects.toThrow(/every needs hours/);
+    expect(
+      await call("mailbox_change", {
+        source: "早上",
+        when: { kind: "daily", at: "08:30" },
+      }),
+    ).toContain("every day at 08:30");
+    await expect(
+      call("mailbox_change", {
+        source: "早上",
+        everyMinutes: 5,
+        when: { kind: "every", hours: 1 },
+      }),
+    ).resolves.toContain("every 1 hour");
+    expect(await call("mailbox_change", { source: "早上", paused: true })).toContain("paused");
+    expect(mailbox[0]?.paused).toBe(true);
+    expect(await call("mailbox_remove", { source: "早上" })).toContain("removed");
+    expect(mailbox).toEqual([]);
+    await expect(call("mailbox_remove", { source: "早上" })).rejects.toThrow(/no mailbox source/);
   });
 
-  it("are never made by an event, new work or a schedule itself", async () => {
-    for (const kind of ["event", "intake", "scheduled"] as const) {
-      const schedules: Schedule[] = [];
-      const { call } = tools({ kind }, { schedules });
-      await expect(
-        call("schedule_add", { about: "x", prompt: "y", kind: "every", hours: 1 }),
-      ).rejects.toThrow(/only the owner/);
-      expect(schedules).toEqual([]);
-    }
+  it("a time is only for a timer", async () => {
+    const mailbox: MailboxSource[] = [];
+    const { call } = tools({}, { mailbox });
+    await call("mailbox_add", {
+      kind: "rss",
+      name: "博客",
+      note: "新文章",
+      config: { url: "https://example.com/feed" },
+    });
+    await expect(
+      call("mailbox_change", { source: "博客", when: { kind: "every", hours: 1 } }),
+    ).rejects.toThrow(/only a timer has a time/);
   });
 });
 

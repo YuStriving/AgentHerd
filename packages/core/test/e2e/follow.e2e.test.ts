@@ -236,6 +236,8 @@ turns:
     const taskId = herd.tasks()[0]?.id ?? "";
     const [job] = herd.store.memory.jobs();
     expect([job?.kind, job?.payload.taskId, job?.payload.cwd]).toEqual(["lesson", taskId, dir]);
+    // A lesson is about the owner's project, not the task's copy of it (ADR 0101).
+    expect(job?.payload.project).toBe(dir);
     expect(job?.payload.signals).toContain("it failed");
   });
 });

@@ -5,16 +5,14 @@ import type {
   FeedQuery,
   FeedSource,
   HerderHost,
-  IntakeWatch,
-  MailWatch,
+  MailboxSource,
   MemoryStore,
   NoticeKind,
   NoticeLevel,
-  Schedule,
   Task,
   TranscriptEntry,
 } from "@agentherd/core";
-import { CORE_TEXTS, checkWhen, nextRun } from "@agentherd/core";
+import { CORE_TEXTS, checkWhen, nextRun, timerWhen } from "@agentherd/core";
 
 export interface Recorded {
   said: string[];
@@ -55,106 +53,72 @@ export function task(id: string, title: string): Task {
   };
 }
 
-function mailHost(
-  watches: MailWatch[],
-): Pick<HerderHost, "mailWatches" | "watchMail" | "unwatchMail"> {
-  return {
-    mailWatches: () => watches,
-    watchMail: async (about, query) => {
-      const watch = {
-        id: `watch-${watches.length + 1}-0000`,
-        about,
-        query,
-        createdAt: "2026-11-04T00:00:00.000Z",
-        seen: [],
-      };
-      watches.push(watch);
-      return watch;
-    },
-    unwatchMail: (id) => {
-      const i = watches.findIndex((w) => w.id === id);
-      if (i >= 0) watches.splice(i, 1);
-      return i >= 0;
-    },
-  };
-}
-
-function intakeHost(
-  watches: IntakeWatch[],
-): Pick<HerderHost, "intakeWatches" | "watchIntake" | "unwatchIntake"> {
-  return {
-    intakeWatches: () => watches,
-    watchIntake: async (request) => {
-      // Like core's Intake.add: an automatic watch starts on a trial run (ADR 0064).
-      const i = watches.findIndex(
-        (w) => w.kind === request.kind && w.repo === request.repo && w.label === request.label,
-      );
-      const same = watches[i];
-      if (same !== undefined) {
-        const auto = request.auto ?? same.auto;
-        const trial = auto && (request.trial ?? (same.auto ? same.trial === true : true));
-        const { trial: _trial, ...rest } = same;
-        const changed: IntakeWatch = { ...rest, auto, ...(trial ? { trial: true } : {}) };
-        watches[i] = changed;
-        return changed;
-      }
-      const auto = request.auto === true;
-      const watch: IntakeWatch = {
-        id: `intake-${watches.length + 1}-0000`,
-        kind: request.kind,
-        ...(request.repo === undefined ? {} : { repo: request.repo }),
-        ...(request.label === undefined ? {} : { label: request.label }),
-        about: request.about ?? request.kind,
-        auto,
-        ...(auto && request.trial !== false ? { trial: true } : {}),
-        createdAt: "2026-11-04T00:00:00.000Z",
-        seen: [],
-        offers: [],
-      };
-      watches.push(watch);
-      return watch;
-    },
-    unwatchIntake: (id) => {
-      const i = watches.findIndex((w) => w.id === id);
-      if (i >= 0) watches.splice(i, 1);
-      return i >= 0;
-    },
-  };
-}
-
 const NOW = new Date("2026-11-04T00:00:00.000Z");
 
-function scheduleHost(
-  list: Schedule[],
-): Pick<HerderHost, "schedules" | "addSchedule" | "changeSchedule" | "removeSchedule"> {
+/** Mailbox sources kept in memory, like core's Mailbox (ADR 0099, 0100). */
+function mailboxHost(
+  list: MailboxSource[],
+): Pick<
+  HerderHost,
+  | "mailboxSources"
+  | "addMailboxSource"
+  | "changeMailboxSource"
+  | "removeMailboxSource"
+  | "tryMailboxSource"
+> {
+  // Like core: a timer's time is checked and kept in its tidy form.
+  const timerConfig = (config: Record<string, unknown>) => {
+    const when = checkWhen(timerWhen(config));
+    if (nextRun(when, NOW) === undefined) throw new Error("already past");
+    return { ...config, when };
+  };
   return {
-    schedules: () => list,
-    addSchedule: (input) => {
-      const when = checkWhen(input.when);
-      const schedule: Schedule = {
-        id: `sched-${list.length + 1}-0000`,
-        ...input,
-        when,
+    mailboxSources: () => list,
+    addMailboxSource: (input) => {
+      const timer = input.kind === "timer";
+      const config = timer ? timerConfig(input.config ?? {}) : (input.config ?? {});
+      const s: MailboxSource = {
+        id: `src-${list.length + 1}-0000`,
+        kind: input.kind,
+        name: input.name,
+        note: input.note ?? "",
+        config,
+        everyMinutes: timer ? 0 : (input.everyMinutes ?? 10),
         paused: false,
+        by: input.by ?? "owner",
         createdAt: NOW.toISOString(),
-        nextAt: nextRun(when, NOW)?.toISOString() ?? NOW.toISOString(),
+        started: timer,
+        fails: 0,
+        letters: 0,
+        act: input.act ?? "sort",
+        trials: 0,
       };
-      list.push(schedule);
-      return schedule;
+      list.push(s);
+      return s;
     },
-    changeSchedule: (id, patch) => {
+    changeMailboxSource: (id, patch) => {
       const i = list.findIndex((s) => s.id === id);
       const old = list[i];
-      if (old === undefined) throw new Error("no such schedule");
-      const changed: Schedule = { ...old, ...patch };
+      if (old === undefined) throw new Error(`no source ${id}`);
+      const config =
+        patch.config === undefined
+          ? old.config
+          : old.kind === "timer"
+            ? timerConfig(patch.config)
+            : patch.config;
+      const changed: MailboxSource = { ...old, ...patch, config };
       list[i] = changed;
       return changed;
     },
-    removeSchedule: (id) => {
+    removeMailboxSource: (id) => {
       const i = list.findIndex((s) => s.id === id);
       if (i >= 0) list.splice(i, 1);
       return i >= 0;
     },
+    tryMailboxSource: async (input) =>
+      input.kind === "timer"
+        ? [{ id: "next", title: input.name, body: "at 2026-11-04 09:00" }]
+        : [{ id: "1", title: "#1 hello", link: "https://example.com/1" }],
   };
 }
 
@@ -170,12 +134,8 @@ export function fakeHost(
     memory?: MemoryStore;
     apps?: string[];
     userHome?: string;
-    /** Mail watches kept in memory (ADR 0048). */
-    mail?: MailWatch[];
-    /** New-work watches kept in memory (ADR 0052). */
-    intake?: IntakeWatch[];
-    /** Schedules kept in memory (ADR 0055). */
-    schedules?: Schedule[];
+    /** Mailbox sources and timers kept in memory (ADR 0099, 0100). */
+    mailbox?: MailboxSource[];
     /** What every new task is told about this Mac (ADR 0059). */
     toolNotes?: string[];
     /** A news source answer; reads are recorded in rec.state "feeds" (ADR 0059). */
@@ -251,9 +211,7 @@ export function fakeHost(
     audit: (type, data) => void rec.audits.push({ type, data }),
     recordTurn: (role, text) => void rec.turns.push({ role, text }),
     ...(opts.memory === undefined ? {} : { memory: opts.memory }),
-    ...(opts.mail === undefined ? {} : mailHost(opts.mail)),
-    ...(opts.intake === undefined ? {} : intakeHost(opts.intake)),
-    ...(opts.schedules === undefined ? {} : scheduleHost(opts.schedules)),
+    ...(opts.mailbox === undefined ? {} : mailboxHost(opts.mailbox)),
     ...(opts.toolNotes === undefined ? {} : { toolNotes: () => opts.toolNotes ?? [] }),
     ...(opts.transcripts === undefined
       ? {}

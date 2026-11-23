@@ -71,6 +71,24 @@ describe("memory vectors", () => {
     expect(hits[0]?.abstract).toContain("打包签名");
   });
 
+  it("drops hits below a score floor, so a turn brings only what fits (ADR 0101)", async () => {
+    const store = seeded();
+    const embedder = fakeEmbedder();
+    await new MemoryWorker({
+      memory: store.memory,
+      transcript: () => [],
+      herderTurnsAfter: () => [],
+      embedder,
+    }).fillVectors();
+    const all = await store.memory.searchHybrid("应用签名", embedder, { limit: 3 });
+    const fitting = await store.memory.searchHybrid("应用签名", embedder, {
+      limit: 3,
+      minScore: 0.45,
+    });
+    expect(fitting.map((h) => h.abstract)).toEqual(["pi-desktop：打包签名失败，换证书后修好"]);
+    expect(fitting.length).toBeLessThanOrEqual(all.length);
+  });
+
   it("falls back to keywords while the vector model is not ready", async () => {
     const store = seeded();
     const hits = await store.memory.searchHybrid("补测试", fakeEmbedder(false));

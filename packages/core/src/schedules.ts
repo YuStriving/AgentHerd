@@ -1,21 +1,12 @@
-// What the Herder does at set times (ADR 0055). The owner asks the Herder in chat ("每天 9 点看看
-// PI-Desktop 有没有新 issue"); the Herder saves it here and it holds at once. At the time the saved
-// words come back to the Herder as a turn of their own, which may answer, start a task or say
-// nothing. Only an owner's message can make or change one: nothing a task, a web page or a mail
-// says can give the Herder work at set times.
-import { randomUUID } from "node:crypto";
-import type { Clock, Timer } from "./clock.ts";
-import type { HerdContext } from "./herd-context.ts";
+// What the Herder does at set times (ADR 0055). Since ADR 0100 a schedule is a mailbox source of
+// kind `timer`; this file knows when one runs. At the time the saved words come back to the Herder
+// as a turn of their own, which may answer, start a task or say nothing. Only an owner's message
+// can make or change one: nothing a task, a web page or a mail says can give the Herder work at
+// set times.
 
-/** Schedules at most; asking for more is refused. */
-export const SCHEDULES_MAX = 20;
 /** The shortest and longest gap of an "every" schedule. */
 export const EVERY_HOURS_MIN = 1;
 export const EVERY_HOURS_MAX = 24 * 7;
-/** How often due schedules are looked for. Long timers are late after the Mac slept. */
-export const SCHEDULE_TICK_MS = 60_000;
-const ABOUT_MAX = 60;
-const PROMPT_MAX = 2000;
 
 /** When a schedule runs, in the Mac's local time. Days are 1 (Monday) to 7 (Sunday). */
 export type ScheduleWhen =
@@ -35,19 +26,6 @@ export interface Schedule {
   /** Next run (ISO); missing for a paused schedule. */
   nextAt?: string;
   lastAt?: string;
-}
-
-export interface ScheduleInput {
-  about: string;
-  prompt: string;
-  when: ScheduleWhen;
-}
-
-export interface SchedulePatch {
-  about?: string;
-  prompt?: string;
-  when?: ScheduleWhen;
-  paused?: boolean;
 }
 
 const CLOCK = /^([01]?\d|2[0-3]):([0-5]\d)$/;
@@ -119,147 +97,4 @@ export function describeWhen(when: ScheduleWhen): string {
   const days =
     when.days === undefined ? "every day" : when.days.map((d) => names[d - 1]).join(", ");
   return `${days} at ${when.at}`;
-}
-
-function tidy(text: string, max: number, what: string): string {
-  const t = text.trim();
-  if (t === "") throw new Error(`${what} is empty`);
-  if (t.length > max) throw new Error(`${what} is over ${max} characters`);
-  return t;
-}
-
-export class Schedules {
-  private readonly ctx: HerdContext;
-  private readonly clock: Clock;
-  private timer: Timer | undefined;
-  private running = false;
-
-  constructor(ctx: HerdContext) {
-    this.ctx = ctx;
-    this.clock = ctx.clock;
-  }
-
-  start(): void {
-    this.running = true;
-    // Missed while AgentHerd was off or the Mac slept: run once now, not once per missed time.
-    this.tick();
-  }
-
-  stop(): void {
-    this.running = false;
-    this.timer?.cancel();
-    this.timer = undefined;
-  }
-
-  list(): Schedule[] {
-    return this.ctx.store.schedules();
-  }
-
-  add(input: ScheduleInput): Schedule {
-    const { store } = this.ctx;
-    if (store.schedules().length >= SCHEDULES_MAX) {
-      throw new Error(`at most ${SCHEDULES_MAX} schedules; remove one first`);
-    }
-    const when = checkWhen(input.when);
-    const now = this.clock.now();
-    const next = nextRun(when, now);
-    if (next === undefined) throw new Error(`${describeWhen(when)} is already past`);
-    const schedule: Schedule = {
-      id: randomUUID(),
-      about: tidy(input.about, ABOUT_MAX, "about"),
-      prompt: tidy(input.prompt, PROMPT_MAX, "prompt"),
-      when,
-      paused: false,
-      createdAt: now.toISOString(),
-      nextAt: next.toISOString(),
-    };
-    store.saveSchedule(schedule);
-    store.audit("schedule.added", {
-      id: schedule.id,
-      about: schedule.about,
-      when: describeWhen(when),
-    });
-    this.arm();
-    return schedule;
-  }
-
-  /** Changes a schedule; throws when there is none. */
-  change(id: string, patch: SchedulePatch): Schedule {
-    const { store } = this.ctx;
-    const old = store.schedules().find((s) => s.id === id);
-    if (old === undefined) throw new Error("no such schedule");
-    const when = patch.when === undefined ? old.when : checkWhen(patch.when);
-    const paused = patch.paused ?? old.paused;
-    const changed: Schedule = {
-      ...old,
-      about: patch.about === undefined ? old.about : tidy(patch.about, ABOUT_MAX, "about"),
-      prompt: patch.prompt === undefined ? old.prompt : tidy(patch.prompt, PROMPT_MAX, "prompt"),
-      when,
-      paused,
-    };
-    delete changed.nextAt;
-    if (!paused) {
-      // Keep the coming time unless when it runs changed or it was paused.
-      const keep = patch.when === undefined && !old.paused ? old.nextAt : undefined;
-      const next = keep ?? nextRun(when, this.clock.now())?.toISOString();
-      if (next === undefined) throw new Error(`${describeWhen(when)} is already past`);
-      changed.nextAt = next;
-    }
-    store.saveSchedule(changed);
-    store.audit("schedule.changed", { id, about: changed.about, paused });
-    this.arm();
-    return changed;
-  }
-
-  /** Removes a schedule; false when there is none. */
-  remove(id: string): boolean {
-    const { store } = this.ctx;
-    const old = store.schedules().find((s) => s.id === id);
-    if (old === undefined) return false;
-    store.deleteSchedule(id);
-    store.audit("schedule.removed", { id, about: old.about });
-    return true;
-  }
-
-  /** Runs every schedule that is due, then waits for the next look. */
-  tick(): void {
-    this.timer?.cancel();
-    this.timer = undefined;
-    if (!this.running) return;
-    const now = this.clock.now();
-    for (const schedule of this.ctx.store.schedules()) {
-      if (schedule.paused || schedule.nextAt === undefined) continue;
-      if (new Date(schedule.nextAt) > now) continue;
-      this.fire(schedule, now);
-    }
-    this.arm();
-  }
-
-  private fire(schedule: Schedule, now: Date): void {
-    const { store } = this.ctx;
-    const next = nextRun(schedule.when, now);
-    if (next === undefined) {
-      store.deleteSchedule(schedule.id);
-      store.audit("schedule.done", { id: schedule.id, about: schedule.about });
-    } else {
-      store.saveSchedule({ ...schedule, lastAt: now.toISOString(), nextAt: next.toISOString() });
-    }
-    const herder = this.ctx.herder();
-    if (herder?.scheduled === undefined) {
-      store.audit("schedule.skipped", { id: schedule.id, reason: "no Herder" });
-      return;
-    }
-    store.audit("schedule.run", { id: schedule.id, about: schedule.about, due: schedule.nextAt });
-    herder.scheduled(schedule);
-  }
-
-  /** Looks again in a minute while something is waiting to run. */
-  private arm(): void {
-    if (!this.running || this.timer !== undefined) return;
-    if (!this.ctx.store.schedules().some((s) => !s.paused)) return;
-    this.timer = this.clock.after(SCHEDULE_TICK_MS, () => {
-      this.timer = undefined;
-      this.tick();
-    });
-  }
 }

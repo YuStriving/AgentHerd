@@ -1,15 +1,15 @@
-import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import react from "@vitejs/plugin-react";
 import { build } from "vite";
 import { expect, it } from "vitest";
+import { runSearchFixture, SearchFixtureStillRunning } from "./search-fixture.js";
 
 it("keeps only matching apps while typing, after a late reply, and after an app event", async () => {
   const out = mkdtempSync(join(tmpdir(), "agentherd-search-"));
+  let safeToRemove = true;
   try {
     await build({
       configFile: false,
@@ -23,14 +23,12 @@ it("keeps only matching apps while typing, after a late reply, and after an app 
     delete env.ELECTRON_RUN_AS_NODE;
     const electron: string =
       process.env.AGENTHERD_TEST_ELECTRON ?? createRequire(import.meta.url)("electron");
-    const { stdout } = await promisify(execFile)(
+    const result = await runSearchFixture(
       electron,
       [join(import.meta.dirname, "fixtures/apps-search.cjs"), join(out, "index.html")],
-      { env, timeout: 60_000 },
+      env,
+      60_000,
     );
-    const line = stdout.split("\n").find((s) => s.startsWith("SEARCH_RESULT "));
-    expect(line, stdout).toBeDefined();
-    const result = JSON.parse((line as string).slice("SEARCH_RESULT ".length));
     expect(result).toEqual({
       firstBatch: ["App 10", "App 11", "App 0", "App 1", "App 2"],
       secondBatch: [
@@ -74,7 +72,13 @@ it("keeps only matching apps while typing, after a late reply, and after an app 
       cleared: ["Gmail", "GitHub"],
       noMatch: [],
     });
+  } catch (error) {
+    if (error instanceof SearchFixtureStillRunning) {
+      safeToRemove = false;
+      throw new Error(`${error.message}; retained fixture files at ${out}`, { cause: error });
+    }
+    throw error;
   } finally {
-    rmSync(out, { recursive: true, force: true });
+    if (safeToRemove) rmSync(out, { recursive: true, force: true });
   }
 }, 90_000);

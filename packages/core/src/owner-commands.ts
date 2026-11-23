@@ -17,8 +17,8 @@ import { parseCommand } from "./commands.ts";
 import { type HerdContext, openTasks, say, steerable, type TaskOps } from "./herd-context.ts";
 import type { OwnerImage } from "./herder-port.ts";
 import { HERDER_RETRY_TARGET } from "./herder-port.ts";
-import { DEFAULT_TIMEOUT_MINUTES } from "./inbox.ts";
-import { INTAKE_TARGET } from "./intake.ts";
+import { DEFAULT_TIMEOUT_MINUTES, type OwnerInputSource } from "./inbox.ts";
+import { MAILBOX_TARGET } from "./mailbox.ts";
 import { forgetMemory, memoryListText, restoreMemory } from "./memory-commands.ts";
 import type { Relay } from "./relay.ts";
 import { WORKSPACE_TARGET } from "./task-runner.ts";
@@ -54,13 +54,13 @@ export class OwnerCommands {
     this.tasks = tasks;
   }
 
-  /** Inbound from the channel. Errors are recorded, never thrown back into the channel. */
-  async handle(inbound: Inbound): Promise<void> {
+  /** Owner input from the channel or desktop. Errors are recorded rather than thrown back. */
+  async handle(inbound: Inbound, source: OwnerInputSource): Promise<void> {
     const { ctx } = this;
     try {
       if (inbound.from !== ctx.opts.binding.ownerId) {
         // The inbox drops and audits everything that does not come from the owner.
-        await ctx.inbox.handle(inbound);
+        await ctx.inbox.handle(inbound, source);
         return;
       }
       if (inbound.kind === "action") {
@@ -70,8 +70,8 @@ export class OwnerCommands {
         if (inbound.target.startsWith(HERD_UI_TARGET)) {
           return await this.onChoice(inbound.target, inbound.action);
         }
-        if (inbound.target.startsWith(INTAKE_TARGET)) {
-          return await ctx.intake()?.answer(inbound.target, inbound.action);
+        if (inbound.target.startsWith(MAILBOX_TARGET)) {
+          return await ctx.mailbox()?.answer(inbound.target, inbound.action);
         }
         if (inbound.target.startsWith(WAIT_TARGET)) {
           return await ctx.waits().answer(inbound.target, inbound.action);
@@ -81,14 +81,14 @@ export class OwnerCommands {
         }
         if (inbound.action === "relay") return await this.relay.start(inbound.target);
         if (inbound.action === "end-relay") return await this.relay.end("ended by you");
-        await ctx.inbox.handle(inbound);
+        await ctx.inbox.handle(inbound, source);
         return;
       }
       // "都批" or "批 1、3" answers the open approval card (ADR 0056).
       if (
         (inbound.images ?? []).length === 0 &&
         (inbound.files ?? []).length === 0 &&
-        (await ctx.inbox.handleText(inbound.text))
+        (await ctx.inbox.handleText(inbound.text, source))
       ) {
         return;
       }

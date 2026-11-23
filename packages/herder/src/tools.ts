@@ -4,7 +4,6 @@
 import { statSync } from "node:fs";
 import { isAbsolute, join, posix, resolve, win32 } from "node:path";
 import {
-  describeWhen,
   type FeedSource,
   type HerderHost,
   headTail,
@@ -14,8 +13,6 @@ import {
   type NoticeKind,
   type NoticeLevel,
   type OwnerImage,
-  type Schedule,
-  type ScheduleWhen,
   type Task,
   type TranscriptEntry,
 } from "@agentherd/core";
@@ -23,6 +20,7 @@ import type { AgentTool, AgentToolResult } from "@agentherd/herder-loop";
 import { OUTBOUND_STEPS, type OutboundStep, stepsSaidIn } from "@agentherd/rules";
 import { arr, bool, int, num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import { agentForModel } from "./agent-models.ts";
+import { mailboxTools, sourceLine } from "./mailbox-tools.ts";
 import {
   decisionsText,
   decisionWords,
@@ -38,7 +36,8 @@ import { composeTaskPrompt, HERDER_LABEL, quoteAgent } from "./prompt.ts";
 export interface TurnContext {
   /** `intake`: new work the owner tapped 「开任务」 on, or their automatic watch found (ADR 0052). */
   /** `scheduled`: a schedule the owner made is due (ADR 0055); its saved words are the owner's. */
-  kind: "owner" | "answer" | "event" | "intake" | "scheduled";
+  /** `letters`: letters the mailbox brought (ADR 0099); other people's words, filed one by one. */
+  kind: "owner" | "answer" | "event" | "intake" | "scheduled" | "letters";
   /** The owner's words this turn may pass on: the message, or the one the answer belongs to. */
   ownerText: string;
   /**
@@ -58,6 +57,8 @@ export interface TurnContext {
   pickedDirs: string[];
   /** New work from a watch on its trial run: session_start starts nothing (ADR 0064). */
   trial?: boolean;
+  /** Letters this turn filed (ADR 0099). */
+  filed?: Set<number>;
 }
 
 /** The answer that lets the owner type their own (ADR 0035). */
@@ -179,32 +180,28 @@ function appLines(host: HerderHost): string[] {
   return [`Connected apps (agents use them through their agentherd tools): ${apps.join(", ")}`];
 }
 
-/** The owner's mail watches, when mail can be watched (ADR 0048). */
-function mailLines(host: HerderHost): string[] {
-  if (host.mailWatches === undefined) return [];
-  const watches = host.mailWatches();
-  return [
-    "Mail watches (AgentHerd tells the owner about new matching mail every few minutes):",
-    ...(watches.length === 0
-      ? ["(none)"]
-      : watches.map(
-          (w) => `- ${w.id.slice(0, 8)} "${w.about}" query=${w.query} since=${w.createdAt}`,
-        )),
-  ];
-}
-
 /** The owner's 小红书 / 知乎 accounts that are turned on, and what each tells (ADR 0058). */
 function socialLines(host: HerderHost): string[] {
   const socials = host.socialWatches?.() ?? [];
   if (socials.length === 0) return [];
   return [
-    "Platforms (the owner's accounts; agents use them through their agentherd tools, writes ask the owner; AgentHerd looks for new notices about every 20 minutes):",
+    "Platforms (the owner's accounts; agents use them through their agentherd tools, writes ask the owner; comments and @ reach you through a mailbox source of kind social):",
     ...socials.map(
       (s) =>
         `- ${s.platform} (${s.name}) ${s.ready ? "signed in" : "not signed in (the owner scans a code in the app)"}; tells: ${
           s.watch.mentions ? "comments and @" : "nothing"
         }`,
     ),
+  ];
+}
+
+/** The owner's mailbox sources and timers (ADR 0099, 0100). */
+function mailboxLines(host: HerderHost): string[] {
+  if (host.mailboxSources === undefined) return [];
+  const all = host.mailboxSources();
+  return [
+    "Mailbox (sources code looks at, and timers; the owner asked for each; mailbox_add, mailbox_change, mailbox_remove):",
+    ...(all.length === 0 ? ["(none)"] : all.map(sourceLine)),
   ];
 }
 
@@ -215,153 +212,6 @@ function noticeLines(host: HerderHost): string[] {
   return [
     "Notices (where small news goes; push = the owner's phone, board = the task board only, off = nowhere; notice_level changes one):",
     ...NOTICE_KINDS.map((k) => `- ${k}: ${levels[k]} (${NOTICE_ABOUT[k]})`),
-  ];
-}
-
-/** New-work watches (ADR 0052). */
-function intakeLines(host: HerderHost): string[] {
-  if (host.intakeWatches === undefined) return [];
-  const watches = host.intakeWatches();
-  return [
-    "New-work watches (AgentHerd offers new GitHub items with 「开任务 / 忽略」, or starts them when auto):",
-    ...(watches.length === 0
-      ? ["(none)"]
-      : watches.map(
-          (w) =>
-            `- ${w.id.slice(0, 8)} "${w.about}" kind=${w.kind}${w.repo === undefined ? "" : ` repo=${w.repo}`}${w.label === undefined ? "" : ` label=${w.label}`} auto=${w.auto}${w.auto && w.trial === true ? ` (trial run, ${w.trials ?? 0} item(s) so far)` : ""}`,
-        )),
-  ];
-}
-
-/** What the Herder does at set times (ADR 0055). */
-function scheduleLines(host: HerderHost): string[] {
-  if (host.schedules === undefined) return [];
-  const list = host.schedules();
-  return [
-    "Schedules (what you do at set times; the owner asked for each):",
-    ...(list.length === 0 ? ["(none)"] : list.map(scheduleLine)),
-  ];
-}
-
-export function scheduleLine(s: Schedule): string {
-  const next = s.paused ? "paused" : `next ${localTime(s.nextAt)}`;
-  return `- ${s.id.slice(0, 8)} "${s.about}" ${describeWhen(s.when)}, ${next}: ${s.prompt.replace(/\s+/g, " ").slice(0, 200)}`;
-}
-
-/** An ISO time as the owner's local "YYYY-MM-DD HH:MM". */
-function localTime(iso: string | undefined): string {
-  if (iso === undefined) return "-";
-  const d = new Date(iso);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-/** The tool's `kind`/`at`/`days`/`hours` as a schedule time. */
-export function whenFrom(args: {
-  kind: string;
-  at?: string;
-  days?: number[];
-  hours?: number;
-}): ScheduleWhen {
-  if (args.kind === "every") {
-    if (args.hours === undefined) throw new Error("every needs hours");
-    return { kind: "every", hours: args.hours };
-  }
-  if (args.at === undefined) throw new Error(`${args.kind} needs at`);
-  if (args.kind === "once") return { kind: "once", at: args.at };
-  if (args.kind === "daily") {
-    return { kind: "daily", at: args.at, ...(args.days === undefined ? {} : { days: args.days }) };
-  }
-  throw new Error('kind must be "daily", "every" or "once"');
-}
-
-function oneSchedule(host: HerderHost, query: string): Schedule {
-  const q = normalize(query);
-  const found = (host.schedules?.() ?? []).filter(
-    (s) => s.id.startsWith(query.trim()) || normalize(s.about).includes(q),
-  );
-  const only = found[0];
-  if (found.length === 1 && only !== undefined) return only;
-  if (found.length === 0) throw new Error(`no schedule matches "${query}"`);
-  throw new Error(
-    `several schedules match "${query}": ${found.map((s) => `${s.id.slice(0, 8)} "${s.about}"`).join(", ")}`,
-  );
-}
-
-/** Schedules exist only because the owner asked, and hold at once (ADR 0055). */
-function scheduleTools(host: HerderHost, turn: () => TurnContext) {
-  const told = "; tell the owner in one short line what you will do and when, in their words";
-  return [
-    {
-      name: "schedule_add",
-      label: "Do something at set times",
-      description:
-        "Only when the owner asks you to do something at set times or later (e.g. 「每天早上 9 点看看 PI-Desktop 有没有新 issue」, 「明天下午三点提醒我交周报」). It holds at once: at each time `prompt` comes back to you as a turn and you do it then (answer, start a task, or say nothing). Never make one on your own.",
-      parameters: scheduleAddSchema,
-      execute: async (
-        _id: string,
-        args: {
-          about: string;
-          prompt: string;
-          kind: string;
-          at?: string;
-          days?: number[];
-          hours?: number;
-        },
-      ) => {
-        ownerOnly(turn, "make schedules");
-        const made = host.addSchedule?.({
-          about: args.about,
-          prompt: args.prompt,
-          when: whenFrom(args),
-        });
-        if (made === undefined) throw new Error("schedules are not available here");
-        return ok(`scheduled:\n${scheduleLine(made)}${told}`);
-      },
-    },
-    {
-      name: "schedule_change",
-      label: "Change a schedule",
-      description:
-        "Changes, pauses or resumes a schedule when the owner asks. Give kind with at/days/hours only to change when it runs.",
-      parameters: scheduleChangeSchema,
-      execute: async (
-        _id: string,
-        args: {
-          schedule: string;
-          about?: string;
-          prompt?: string;
-          paused?: boolean;
-          kind?: string;
-          at?: string;
-          days?: number[];
-          hours?: number;
-        },
-      ) => {
-        ownerOnly(turn, "change schedules");
-        const old = oneSchedule(host, args.schedule);
-        const changed = host.changeSchedule?.(old.id, {
-          ...(args.about === undefined ? {} : { about: args.about }),
-          ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
-          ...(args.paused === undefined ? {} : { paused: args.paused }),
-          ...(args.kind === undefined ? {} : { when: whenFrom({ ...args, kind: args.kind }) }),
-        });
-        if (changed === undefined) throw new Error("schedules are not available here");
-        return ok(`changed:\n${scheduleLine(changed)}${told}`);
-      },
-    },
-    {
-      name: "schedule_remove",
-      label: "Remove a schedule",
-      description: "Removes a schedule when the owner no longer wants it.",
-      parameters: scheduleRemoveSchema,
-      execute: async (_id: string, args: { schedule: string }) => {
-        ownerOnly(turn, "remove schedules");
-        const old = oneSchedule(host, args.schedule);
-        host.removeSchedule?.(old.id);
-        return ok(`removed "${old.about}"`);
-      },
-    },
   ];
 }
 
@@ -412,24 +262,6 @@ function danjuanLines(host: HerderHost): string[] {
     ];
   }
   return [`雪球基金 (Danjuan Funds): ${dj.state}.`];
-}
-
-/** A mail watch by id prefix or words of what it is about. */
-function oneWatch(host: HerderHost, query: string): { id: string; about: string } {
-  const q = normalize(query);
-  const watches = host.mailWatches?.() ?? [];
-  const found = watches.filter(
-    (w) =>
-      w.id.startsWith(query.trim()) ||
-      normalize(w.about).includes(q) ||
-      normalize(w.query).includes(q),
-  );
-  const only = found[0];
-  if (found.length === 1 && only !== undefined) return only;
-  if (found.length === 0) throw new Error(`no mail watch matches "${query}"`);
-  throw new Error(
-    `several mail watches match "${query}": ${found.map((w) => `${w.id.slice(0, 8)} "${w.about}"`).join(", ")}`,
-  );
 }
 
 /** Ended tasks listed by session_list, newest first. */
@@ -621,99 +453,6 @@ const findSchema = obj({
   name: str({ description: "The project's name as the owner said it, e.g. pi-desktop" }),
 });
 const emptySchema = obj({});
-const mailWatchSchema = obj({
-  about: str({
-    description:
-      'What the owner wants to hear about, in their words, e.g. "导师的邮件". Shown on every notice.',
-  }),
-  query: str({
-    description:
-      "A Gmail search for that mail, e.g. from:prof@uni.edu, subject:offer, is:important, or in:inbox for all new mail.",
-  }),
-});
-const intakeWatchSchema = obj({
-  kind: str({
-    description:
-      '"issues" for issues assigned to the owner, "reviews" for pull requests waiting for their review.',
-  }),
-  repo: opt(
-    str({
-      description:
-        "Repository to watch only, as owner/name or just the name of one of the owner's own repositories; leave out for all.",
-    }),
-  ),
-  label: opt(str({ description: "Only issues or pull requests with this label." })),
-  about: opt(str({ description: 'What the owner wants, in their words, e.g. "acme 的 bug".' })),
-  auto: opt(
-    bool({
-      description:
-        "true only when the owner said such items should start without asking (e.g. 「指派给我的 bug 直接做」). Default: ask.",
-    }),
-  ),
-  trial: opt(
-    bool({
-      description:
-        "An automatic watch starts on a trial run that starts nothing. false ends the trial run, only when the owner says so (「放开」「以后直接开」). Leave out otherwise.",
-    }),
-  ),
-});
-
-const whenFields = {
-  kind: oneOf(["daily", "every", "once"] as const, {
-    description:
-      "daily: at a time on every day or on some weekdays; every: every N hours from now; once: one time at a date and time",
-  }),
-  at: opt(
-    str({
-      description:
-        'daily: "HH:MM"; once: "YYYY-MM-DD HH:MM". The owner\'s local time, the one in [Now: …].',
-    }),
-  ),
-  days: opt(
-    arr(int({ minimum: 1, maximum: 7 }), {
-      description: "daily only: weekdays, 1 Monday … 7 Sunday; leave out for every day",
-    }),
-  ),
-  hours: opt(num({ description: "every only: hours between runs, at least 1" })),
-};
-const scheduleAddSchema = obj({
-  about: str({
-    description: 'A short name in the owner\'s words, e.g. "早上看 PI-Desktop 新 issue".',
-  }),
-  prompt: str({
-    description:
-      "What you do at the time, as a message from the owner would say it, complete on its own: the project (folder or name), what to do or check, and when to stay quiet (e.g. 「没有新的就不用说」). It is all you will have then.",
-  }),
-  ...whenFields,
-});
-const scheduleChangeSchema = obj({
-  schedule: str({ description: "The schedule's id prefix or words of its name." }),
-  about: opt(str()),
-  prompt: opt(str()),
-  paused: opt(bool({ description: "true to pause, false to run it again" })),
-  kind: opt(whenFields.kind),
-  at: whenFields.at,
-  days: whenFields.days,
-  hours: whenFields.hours,
-});
-const scheduleRemoveSchema = obj({
-  schedule: str({ description: "The schedule's id prefix or words of its name." }),
-});
-
-const intakeUnwatchSchema = obj({
-  watch: str({ description: "The watch's id prefix or words of what it is about." }),
-});
-
-const socialWatchSchema = obj({
-  platform: oneOf(["xiaohongshu", "zhihu"] as const, {
-    description: "xiaohongshu = 小红书, zhihu = 知乎",
-  }),
-  kind: oneOf(["mentions"] as const, {
-    description:
-      "mentions = comments, answers and @; likes, saves and new followers are never told",
-  }),
-  on: bool({ description: "true to tell the owner about this kind, false to stop" }),
-});
 
 const noticeLevelSchema = obj({
   kind: oneOf(NOTICE_KINDS, {
@@ -765,10 +504,6 @@ const fundHoldingsSchema = obj({
   ),
 });
 
-const mailUnwatchSchema = obj({
-  watch: str({ description: "Mail watch id prefix or words of what it is about" }),
-});
-
 export function herderTools(
   host: HerderHost,
   turn: () => TurnContext,
@@ -801,10 +536,8 @@ export function herderTools(
           ...modelLines(host, modelTiers),
           `Relay: ${host.relayTaskId()?.slice(0, 8) ?? "none"}`,
           ...appLines(host),
-          ...mailLines(host),
           ...socialLines(host),
-          ...intakeLines(host),
-          ...scheduleLines(host),
+          ...mailboxLines(host),
           ...noticeLines(host),
           ...sourceLines(host),
           ...westockLines(host),
@@ -858,7 +591,8 @@ export function herderTools(
         },
       ) => {
         const t = turn();
-        if (t.kind === "event") throw new Error("tasks start only when the owner asks");
+        if (t.kind === "event" || t.kind === "letters")
+          throw new Error("tasks start only when the owner asks; offer it with ask");
         const hard = args.hard === true;
         if (!isVerbatim(args.ownerText, t.ownerText)) {
           throw new Error("ownerText must be the owner's words copied exactly from their message");
@@ -993,7 +727,8 @@ export function herderTools(
       parameters: promptSchema,
       execute: async (_id: string, args: { task: string; text: string; name?: string }) => {
         const t = turn();
-        if (t.kind === "event") throw new Error("only the owner can message tasks; use notify");
+        if (t.kind === "event" || t.kind === "letters")
+          throw new Error("only the owner can message tasks; use notify");
         const task = anyTask(host, args.task);
         const verbatim = isVerbatim(args.text, t.ownerText);
         const name = args.name?.trim();
@@ -1017,7 +752,8 @@ export function herderTools(
       description: "Cancels the running turn of a task. The task stays open.",
       parameters: taskSchema,
       execute: async (_id: string, args: { task: string }) => {
-        if (turn().kind === "event") throw new Error("only the owner can cancel");
+        if (turn().kind === "event" || turn().kind === "letters")
+          throw new Error("only the owner can cancel");
         const task = oneTask(host, args.task);
         await host.cancelTurn(task.id);
         return ok(`cancelled the turn of ${task.id.slice(0, 8)}`);
@@ -1030,7 +766,8 @@ export function herderTools(
         'Closes a task for good when the owner says it is finished or no longer wanted ("可以结束了", "不用了"). The agent stops; the task stays in the list as ended and can be continued later with session_prompt. To stop only what it is doing now, use session_cancel.',
       parameters: taskSchema,
       execute: async (_id: string, args: { task: string }) => {
-        if (turn().kind === "event") throw new Error("only the owner can end a task");
+        if (turn().kind === "event" || turn().kind === "letters")
+          throw new Error("only the owner can end a task");
         const task = oneTask(host, args.task);
         await host.endTask(task.id);
         return ok(`ended ${task.id.slice(0, 8)}`);
@@ -1042,7 +779,8 @@ export function herderTools(
       description: "Owner messages go straight to this task until /end.",
       parameters: taskSchema,
       execute: async (_id: string, args: { task: string }) => {
-        if (turn().kind === "event") throw new Error("only the owner can start a relay");
+        if (turn().kind === "event" || turn().kind === "letters")
+          throw new Error("only the owner can start a relay");
         const task = oneTask(host, args.task);
         await host.startRelay(task.id);
         return ok(`relay to ${task.id.slice(0, 8)} started`);
@@ -1108,34 +846,6 @@ export function herderTools(
     },
   ];
   const all = tools.map((t) => t as unknown as AgentTool);
-  if (host.watchMail !== undefined) {
-    all.push(...mailTools(host, turn).map((t) => t as unknown as AgentTool));
-  }
-  const setSocialWatch = host.setSocialWatch;
-  if (setSocialWatch !== undefined) {
-    const socialTool = {
-      name: "social_watch",
-      label: "Platform notices",
-      description:
-        "Turns telling the owner about one kind of notice on their 小红书 or 知乎 account on or off, when the owner asks.",
-      parameters: socialWatchSchema,
-      execute: async (
-        _id: string,
-        args: {
-          platform: "xiaohongshu" | "zhihu";
-          kind: "mentions";
-          on: boolean;
-        },
-      ) => {
-        ownerOnly(turn, "change platform watches");
-        setSocialWatch(args.platform, args.kind, args.on);
-        return ok(
-          `${args.platform} ${args.kind} ${args.on ? "on" : "off"}; tell the owner in one short line`,
-        );
-      },
-    };
-    all.push(socialTool as unknown as AgentTool);
-  }
   const transcript = host.transcript;
   if (transcript !== undefined) {
     const readTool = {
@@ -1230,12 +940,7 @@ export function herderTools(
     };
     all.push(fundTool as unknown as AgentTool);
   }
-  if (host.watchIntake !== undefined) {
-    all.push(...intakeTools(host, turn).map((t) => t as unknown as AgentTool));
-  }
-  if (host.addSchedule !== undefined) {
-    all.push(...scheduleTools(host, turn).map((t) => t as unknown as AgentTool));
-  }
+  all.push(...mailboxTools(host, turn));
   return all;
 }
 
@@ -1245,112 +950,9 @@ const SPEAK_IN_REPLY = "while telling a task's result, put everything in your re
 /** Only the owner's own words create or change a new-work watch (ADR 0052). */
 function ownerOnly(turn: () => TurnContext, what: string): void {
   const kind = turn().kind;
-  if (kind === "event" || kind === "intake" || kind === "scheduled") {
+  if (kind === "event" || kind === "intake" || kind === "scheduled" || kind === "letters") {
     throw new Error(`only the owner can ${what}`);
   }
-}
-
-function oneIntake(host: HerderHost, query: string): { id: string; about: string } {
-  const q = normalize(query);
-  const found = (host.intakeWatches?.() ?? []).filter(
-    (w) => w.id.startsWith(query.trim()) || normalize(w.about).includes(q),
-  );
-  const only = found[0];
-  if (found.length === 1 && only !== undefined) return only;
-  if (found.length === 0) throw new Error(`no new-work watch matches "${query}"`);
-  throw new Error(
-    `several new-work watches match "${query}": ${found.map((w) => `${w.id.slice(0, 8)} "${w.about}"`).join(", ")}`,
-  );
-}
-
-function intakeTools(host: HerderHost, turn: () => TurnContext) {
-  return [
-    {
-      name: "intake_watch",
-      label: "Watch for new work",
-      description:
-        "Only when the owner asks to hear about new GitHub work (e.g. 「有指派给我的 issue 告诉我」, 「有人请我 review 就提醒我」): from now on AgentHerd checks GitHub every few minutes and offers each new item with 「开任务 / 忽略」. Set auto only when the owner said such items should start by themselves; an automatic watch starts on a trial run that starts nothing until the owner lets it (trial false). Calling again with the same kind/repo/label changes auto or trial. Never start one on your own.",
-      parameters: intakeWatchSchema,
-      execute: async (
-        _id: string,
-        args: {
-          kind: string;
-          repo?: string;
-          label?: string;
-          about?: string;
-          auto?: boolean;
-          trial?: boolean;
-        },
-      ) => {
-        ownerOnly(turn, "ask for new-work watches");
-        if (args.kind !== "issues" && args.kind !== "reviews") {
-          throw new Error('kind must be "issues" or "reviews"');
-        }
-        const watch = await host.watchIntake?.({
-          kind: args.kind,
-          ...(args.repo === undefined ? {} : { repo: args.repo }),
-          ...(args.label === undefined ? {} : { label: args.label }),
-          ...(args.about === undefined ? {} : { about: args.about }),
-          ...(args.auto === undefined ? {} : { auto: args.auto }),
-          ...(args.trial === undefined ? {} : { trial: args.trial }),
-        });
-        if (watch === undefined) throw new Error("GitHub cannot be watched here");
-        const how = !watch.auto
-          ? "new items are offered to the owner"
-          : watch.trial === true
-            ? "automatic, on a trial run: new items are still offered, and each comes to you as a trial turn that starts nothing; it starts work by itself only after the owner lets it (trial false)"
-            : "automatic: new items start a task by themselves";
-        return ok(
-          `watching ${watch.id.slice(0, 8)} "${watch.about}" (${how}); tell the owner in one short line`,
-        );
-      },
-    },
-    {
-      name: "intake_unwatch",
-      label: "Stop watching for new work",
-      description: "Stops a new-work watch when the owner no longer wants those offers.",
-      parameters: intakeUnwatchSchema,
-      execute: async (_id: string, args: { watch: string }) => {
-        ownerOnly(turn, "stop new-work watches");
-        const watch = oneIntake(host, args.watch);
-        host.unwatchIntake?.(watch.id);
-        return ok(`stopped watching "${watch.about}"`);
-      },
-    },
-  ];
-}
-
-/** Mail watches exist only because the owner asked (ADR 0048). */
-function mailTools(host: HerderHost, turn: () => TurnContext) {
-  return [
-    {
-      name: "mail_watch",
-      label: "Watch mail",
-      description:
-        "Only when the owner asks to be told about some mail (e.g. 「导师来邮件提醒我」): from now on AgentHerd checks Gmail every few minutes and tells the owner about new mail matching the search. Never start one on your own.",
-      parameters: mailWatchSchema,
-      execute: async (_id: string, args: { about: string; query: string }) => {
-        ownerOnly(turn, "ask for mail watches");
-        const watch = await host.watchMail?.(args.about, args.query);
-        if (watch === undefined) throw new Error("mail cannot be watched here");
-        return ok(
-          `watching mail ${watch.id.slice(0, 8)} "${watch.about}" (query: ${watch.query}); tell the owner in one short line`,
-        );
-      },
-    },
-    {
-      name: "mail_unwatch",
-      label: "Stop watching mail",
-      description: "Stops a mail watch when the owner no longer wants those notices.",
-      parameters: mailUnwatchSchema,
-      execute: async (_id: string, args: { watch: string }) => {
-        ownerOnly(turn, "stop mail watches");
-        const watch = oneWatch(host, args.watch);
-        host.unwatchMail?.(watch.id);
-        return ok(`stopped watching "${watch.about}"`);
-      },
-    },
-  ];
 }
 
 /** The owner's models grouped by name: services in list order, agents that can run any of them. */

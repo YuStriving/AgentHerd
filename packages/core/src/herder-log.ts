@@ -89,6 +89,10 @@ export function roundOf(text: string): { kind: HerderRoundKind; title: string } 
       title: oneLine(task === null ? (lines[1] ?? "") : `「${task[1]}」${task[2]}`),
     };
   }
+  if (first.startsWith("[Letters") || first.startsWith("[Mailbox digest")) {
+    // ADR 0099: the head line says how many letters came.
+    return { kind: "event", title: oneLine(first.replace(/^\[[^\]]*\]\s*/, "信箱：")) };
+  }
   if (
     first.startsWith("[Already sent to the owner") ||
     first.startsWith("[Not pushed") ||

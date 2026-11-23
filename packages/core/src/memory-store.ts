@@ -687,15 +687,19 @@ export class MemoryStore {
 
   /**
    * Keyword search blended with vector similarity when `embedder` is ready: 0.7 cosine + 0.3
-   * keyword rank scaled to the best keyword hit. Falls back to keywords alone.
+   * keyword rank scaled to the best keyword hit. Falls back to keywords alone. `minScore` drops
+   * blended hits below it; keyword-only scores have no common scale, so it does not apply to them.
    */
   async searchHybrid(
     query: string,
     embedder: Embedder | undefined,
-    opts: { kinds?: readonly MemoryKind[]; limit?: number } = {},
+    opts: { kinds?: readonly MemoryKind[]; limit?: number; minScore?: number } = {},
   ): Promise<MemoryHit[]> {
     const limit = opts.limit ?? 10;
-    const words = this.search(query, { ...opts, limit: limit * 3 });
+    const words = this.search(query, {
+      ...(opts.kinds === undefined ? {} : { kinds: opts.kinds }),
+      limit: limit * 3,
+    });
     if (embedder === undefined || query.trim() === "") return words.slice(0, limit);
     let qv: Float32Array | undefined;
     try {
@@ -718,6 +722,7 @@ export class MemoryStore {
     const byId = new Map(words.map((h) => [h.id, h] as const));
     const hits: MemoryHit[] = [];
     for (const [id, score] of [...scores].sort((a, b) => b[1] - a[1])) {
+      if (opts.minScore !== undefined && score < opts.minScore) break;
       const row = byId.get(id) ?? this.get(id);
       if (row === undefined || row.status !== "active") continue;
       hits.push({ ...row, score });

@@ -714,6 +714,8 @@ export class TaskRunner {
       taskId,
       title: f.task.title,
       cwd: f.cwd,
+      // The owner's folder, not the task's copy of it: a lesson is about the project (ADR 0101).
+      project: f.workspace?.project ?? f.cwd,
       agent: f.task.agent,
       failed: f.failed,
       why,

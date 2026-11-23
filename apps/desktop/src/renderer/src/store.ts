@@ -11,6 +11,7 @@ import type {
   HostStatus,
   LarkView,
   LoginView,
+  MailboxView,
   ModelsView,
   PluginView,
   ProviderView,
@@ -41,7 +42,7 @@ export type Page =
   | "tasks"
   | "herders"
   | "memory"
-  | "schedules"
+  | "mailbox"
   | "connections"
   | "agents"
   | "models"
@@ -78,6 +79,8 @@ interface AppState {
   danjuan: DanjuanView | undefined;
   /** 应用连接 › 插件 (ADR 0094); kept by "plugins" events. */
   plugins: PluginView[] | undefined;
+  /** 信箱 (ADR 0099); loaded when the page shows, then kept by "mailbox" events. */
+  mailbox: MailboxView | undefined;
   providers: ProviderView[];
   setup: SetupState | undefined;
   page: Page;
@@ -99,7 +102,7 @@ const PAGES: readonly Page[] = [
   "tasks",
   "herders",
   "memory",
-  "schedules",
+  "mailbox",
   "connections",
   "agents",
   "models",
@@ -120,6 +123,8 @@ function firstRunDone(): boolean {
 /** A page named in the URL hash (e.g. "#models"), for previews and reloads. */
 function hashPage(): Page | undefined {
   const name = window.location.hash.slice(1);
+  // 定时任务 moved into the 信箱 (ADR 0100).
+  if (name === "schedules") return "mailbox";
   return PAGES.find((p) => p === name);
 }
 
@@ -139,6 +144,7 @@ export const useApp = create<AppState>()((set, get) => ({
   westock: undefined,
   danjuan: undefined,
   plugins: undefined,
+  mailbox: undefined,
   providers: [],
   setup: undefined,
   page: hashPage() ?? "tasks",
@@ -243,6 +249,9 @@ function applyEvent(event: HostEvent): void {
       break;
     case "plugins":
       useApp.setState({ plugins: event.data });
+      break;
+    case "mailbox":
+      useApp.setState({ mailbox: event.data });
       break;
     case "login":
       useApp.setState({ login: event.data });

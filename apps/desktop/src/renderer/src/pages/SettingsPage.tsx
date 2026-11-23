@@ -566,7 +566,7 @@ function PetKeys({
       {row(
         "talkKey",
         "和主管说话",
-        "在哪个应用里按都行：桌宠打开对话，光标直接在输入框里",
+        "在哪个应用里按都行：打开对话并聚焦输入框，再按一次收起",
         <IconTile>
           <Keyboard size={15} strokeWidth={1.75} />
         </IconTile>,

@@ -108,9 +108,9 @@ The Herder may add, never rewrite.
 | Sessions | `session_start(project, name, profile?, ownerText, addedContext, model?)` (GPT models run in Codex, the rest in Pi, [ADR 0031](../adr/0031-pick-the-agent-from-the-model.md); `hard?` sends a hard coding task to Claude Code when it is installed and an Anthropic-style model fits, [ADR 0069](../adr/0069-claude-code-the-owners-own-or-downloaded.md)) (name: the task's short name, shown on the board and every report, [ADR 0034](../adr/0034-herder-names-tasks.md)) (model: `service/model` the agent can run, picked by the Herder, [ADR 0025](../adr/0025-herder-picks-model-per-task.md)), `session_prompt(sessionId, text, name?)` (name renames the task), `session_cancel(sessionId)` (stops the running turn), `session_end(sessionId)` (closes the task when the owner says it is finished), `session_list()` (also lists models, the agents that can run each, and the owner's model guide, [ADR 0026](../adr/0026-model-guide-for-the-herder.md)) |
 | Owner | `ask(text, options)` (AgentHerd adds 「其他」), `project_find(name)`, `notify(text)`, `relay_start(sessionId)`, `relay_end()`, `task_search(query)` (earlier tasks by title, project and last report; up to 10, [ADR 0054](../adr/0054-say-what-matters.md)), `task_read(task, replies?)` (a task's latest reply, or its last 5, whole and quoted; at most 40,000 characters, [ADR 0062](../adr/0062-restarts-lose-nothing-and-wake-ups-stop-at-three.md)), `notice_level(kind, level)` (where one kind of small news goes: push, board or off, [ADR 0061](../adr/0061-small-news-on-the-board.md)) |
 | Read | `task_get`, `task_list`, `session_transcript`, `decisions_list`, `read`, `grep`, `list`, `git_log`, `git_diff` (read tools only inside known project directories) |
-| Schedules | `schedule_add(about, prompt, kind, at?, days?, hours?)`, `schedule_change(schedule, …, paused?)`, `schedule_remove(schedule)`: what the Herder does at set times, only when the owner asks ([ADR 0055](../adr/0055-schedules-the-herder-makes.md)) |
+| Mailbox | `mailbox_add`, `mailbox_change`, `mailbox_try`, `mailbox_list`, `mailbox_remove`, `letters_file`: sources code looks at (repositories, GitHub work, Gmail, 小红书/知乎, feeds, Hacker News, scripts) and timers, only when the owner asks ([ADR 0099](../adr/0099-a-mailbox-for-the-herder.md), [ADR 0100](../adr/0100-every-watch-and-schedule-is-a-mailbox-source.md)) |
 | Context | `compress`, `decompress`, `search_context`, `acp_status`: fold finished parts of its own conversation, find and show them again ([ADR 0045](../adr/0045-herder-context-folded-by-the-model.md)) |
-| Web | `web_search(query, source?, limit?)` (web results from DuckDuckGo, then Bing; `source: github` lists repositories, trying fewer words when all of them find nothing, [ADR 0085](../adr/0085-asked-for-projects-the-herder-names-real-ones.md); `source: research` asks the web, GitHub and Hacker News at once, at most 8 s, merged by link, [ADR 0086](../adr/0086-research-searches-several-sources-at-once.md)), `web_read(url, maxChars?)` (a public page as text; a GitHub repository's facts from the API): read-only, public hosts only, for quick answers without a task ([ADR 0071](../adr/0071-look-things-up-and-keep-the-board-short.md)) |
+| Web | `web_search(query, source?, limit?)` (web results from DuckDuckGo, then Bing; `source: github` lists repositories, trying fewer words when all of them find nothing, [ADR 0085](../adr/0085-asked-for-projects-the-herder-names-real-ones.md); `source: research` asks the web, GitHub and Hacker News at once, at most 8 s, merged by link, [ADR 0086](../adr/0086-research-searches-several-sources-at-once.md)), `web_read(url, maxChars?)` (a public page as text; a GitHub repository's facts from the API; a GitHub issue page comes with its linked pull requests, open, closed and merged, from the API, [ADR 0102](../adr/0102-code-keeps-what-the-prompt-did-not.md)): read-only, public hosts only, for quick answers without a task ([ADR 0071](../adr/0071-look-things-up-and-keep-the-board-short.md)) |
 | Market | `stock_quote(query)` (live A-share, HK, US, ETF and broad index quotes from Tencent Finance when 腾讯自选股 is on; read-only, zero login, objective reference only; [ADR 0076](../adr/0076-westock-market-quotes-and-research-cli.md)), `fund_holdings(days?, account?)` (personal 雪球基金 holdings and recent N-day NAV gains when signed in; read-only, [ADR 0077](../adr/0077-xueqiu-danjuan-fund-holdings.md)) |
 
 There is no tool to approve an item, write files or run shell commands. Every Herder tool call
@@ -375,66 +375,15 @@ follows its tickets' pull requests ([ADR 0047](../adr/0047-follow-the-pull-reque
   error; after 30 minutes the owner is told once (see Source health). `gh` runs with the
   system proxy. `agentherd run` does not follow pull requests.
 
-### Mail
-
-Mail is watched only when the owner asks for it ([ADR 0048](../adr/0048-watch-mail-only-when-asked.md)).
-
-- **Asking.** 「导师来邮件提醒我」: the Herder calls `mail_watch` with the owner's words (`about`)
-  and a Gmail search (`query`); `mail_unwatch` stops it; `session_list` lists watches. Only an
-  owner turn can add or stop one. The tools exist only when the owner has connected apps
-  (Composio, [09-agent-tools.md](09-agent-tools.md) §3). There is no setting.
-- **Looking.** While at least one watch exists, every 3 minutes (`mailPollMinutes`) each search
-  runs as `(<query>) after:<created>` with `GMAIL_FETCH_EMAILS` through
-  `COMPOSIO_MULTI_EXECUTE_TOOL`. With no watch nothing is polled. Creating a watch runs the
-  search once and fails when Gmail cannot answer.
-- **Telling.** New matches are sent once: 「新邮件（<about>）：」 then sender, subject, a preview
-  of at most 40 characters and the Gmail link, at most 3 per message and then 「还有 N 封」; the
-  whole message stays within 100 words (fewer mails, then no previews, then cut; ADR 0049). The Herder's conversation gets the same
-  as an event line marked as mail. Table `mail_watches` (schema 10) keeps watches and the ids
-  told; they survive restarts.
-- **Failures** are audited (`mail.error`) once per distinct error; after 30 minutes the owner
-  is told once (see Source health).
-
-### New work
-
-New GitHub work is offered only when the owner asks for it ([ADR 0052](../adr/0052-offer-new-github-work-when-asked.md)).
-
-- **Asking.** 「有指派给我的 issue 告诉我」「有人请我 review 就提醒我」: the Herder calls
-  `intake_watch` with `kind` `issues` (open issues assigned to the owner) or `reviews`
-  (open pull requests requesting their review), optionally `repo` and `label`, and `auto`
-  only when the owner said such items start by themselves. The same kind/repo/label again only
-  changes `auto` or `trial`. `intake_unwatch` stops one; `session_list` lists them. Only an owner
-  turn can add, change or stop one. The tools exist only when `gh` is set up.
-- **Trial run.** A watch made automatic starts on a trial run
-  ([ADR 0064](../adr/0064-permission-follows-the-work-and-intake-starts-on-trial.md)): each new
-  item is still offered with 「开任务」「忽略」 and a line 「试运行第 n 条：自动开工还没放开…」, and
-  the Herder gets a trial intake turn. There `session_start` runs every check but starts nothing:
-  it audits `intake.trial` (item, title, folder, agent, model, allowed steps) and the Herder tells
-  the owner in one line what it would have started and which words of the item decided it. When
-  the owner says so (「放开」), the Herder calls `intake_watch` with `trial` false; from then on new
-  items start by themselves. Turning `auto` off and on again starts a new trial run.
-- **Looking.** While a watch exists, every 5 minutes (`intakePollMinutes`) each watch runs
-  `gh search issues --assignee=@me` or `gh search prs --review-requested=@me` with
-  `--state=open`. Creating a watch searches once; what is there already is not new, and a
-  failing `gh` refuses the watch. Failures count for source health as `github`.
-- **Offering.** A new item is sent once as a question card: 「有指派给你的 issue：<repo> #n
-  <title>（链接）。要开任务吗？」 with 「开任务」「忽略」. Core handles the tap: the card shows the
-  choice; 「开任务」 gives the Herder an intake turn with the item's line. With `auto` (after the
-  trial run) the owner gets 「按你的规则开工：…」 and the intake turn runs at once. The Herder's
-  conversation gets every new item as an event marked as new GitHub work. Table `intake_watches`
-  (schema 12) keeps watches, seen items, unanswered offers and the trial run's count.
-- **The intake turn** may start a task. The title is quoted as not from the owner; only the
-  repository's name picks a project without asking (ADR 0043), otherwise the Herder asks which
-  folder. The task's prompt has the item's link, so its pull request is followed (ADR 0051).
-
 ### Platforms
 
 - **小红书 and 知乎** (ADR 0058) are each turned on in 应用连接 after a risk notice and a QR sign-in. Every
   20 ± 5 minutes AgentHerd reads its unread counts and opens a notice list only when it has
   something unread; the first look of a kind only learns what is there. New comments and @ go to
   the owner one per line (three at most, then a count) and to the Herder as a `social` event;
-  likes, saves and new followers are never told. `social_watch` turns this off or on when the
-  owner asks; `session_list` shows platforms. Agents use the account through `XIAOHONGSHU_` and
+  likes, saves and new followers are never told. Since ADR 0100 this looking is a mailbox source
+  of kind `social` (added when the platform is turned on); pausing it, or the switch in 应用连接,
+  stops it; `session_list` shows platforms. Agents use the account through `XIAOHONGSHU_` and
   `ZHIHU_` tools; writes ask (ADR 0056).
   The Herder's system prompt ends with the connected accounts (signed in or not) and apps, rebuilt
   on the next turn after one changes; a 小红书 or 知乎 link starts a read-only task at once when
@@ -447,45 +396,75 @@ New GitHub work is offered only when the owner asks for it ([ADR 0052](../adr/00
   (lark-cli signed in as the owner, the Obsidian vault, whether Tencent WeStock live quotes or the
   `westock` research CLI are available, and 雪球基金 read-only status when connected) to every new
   task's context.
-- **Watches list.** 定时任务 → 在盯的 lists pull requests, mail watches, new-work watches and
-  platform kinds; pausing keeps a watch without looking (`paused` in its row), removing deletes it.
+### Mailbox
 
-### Schedules
+Things outside AgentHerd reach the Herder as letters, and what it does at set times is a timer in
+the same 信箱 ([ADR 0099](../adr/0099-a-mailbox-for-the-herder.md),
+[ADR 0100](../adr/0100-every-watch-and-schedule-is-a-mailbox-source.md)).
 
-What the Herder does at set times, made only when the owner asks ([ADR 0055](../adr/0055-schedules-the-herder-makes.md)).
-
-- **Making.** 「每天早上 9 点看看 PI-Desktop 有没有新 issue」: the Herder calls `schedule_add`
-  with `about` (a short name), `prompt` (what to do then, complete on its own, including when to
-  stay quiet) and the time: `daily` at `HH:MM` (optional `days`, 1 Monday … 7 Sunday), `every`
-  N hours (1–168), or `once` at `YYYY-MM-DD HH:MM`, all in the Mac's local time. It holds at
-  once, without a confirmation card; the Herder restates it in one line so the owner can
-  correct it. `schedule_change` changes, pauses or resumes one, `schedule_remove` removes it,
-  `session_list` lists them. Only an owner turn can make, change or remove one. At most 20.
-- **Running.** Core looks every minute for due schedules (long timers are late after the Mac
-  slept). A due schedule gives the Herder a scheduled turn: its prompt as the owner's words,
-  so it may answer, start a task (`ownerText` is the prompt) or reply `[quiet]` to say nothing.
-  A scheduled turn cannot make schedules, watches or memory. Times missed while AgentHerd was
-  off or the Mac slept run once on start, not once per missed time. A `once` schedule is
-  removed after it ran.
-- **Keeping.** Table `schedules` (schema 13). The app's 「定时任务」 page lists them with the
-  next run, and pauses, resumes or removes one.
+- **Sources.** Kinds `github` (a repository's new issues, pull requests, releases; optional
+  words), `work` (issues assigned to the owner and pull requests asking their review, through
+  `gh search`; optional repository and label), `mail` (a Gmail search through Composio, from
+  when the source was made), `social` (小红书 or 知乎 comments and @; skipped while signed out; the
+  notice list is opened only when something is unread), `rss`, `hn` (new stories with words,
+  optional points floor), `script` (a command that reads `{"state": …}` and prints
+  `{"letters": [...], "state": …}`) and `timer`. Each has the owner's sentence for the Herder and
+  how often it is looked at (at least GitHub and work 5 minutes, mail 3, social 20 ± 5, RSS and HN
+  15, script 1). At most 50.
+- **Looking.** Code only. The first look remembers the ids that are there; later looks pass on
+  ids never seen (1,000 kept per source). Three failed looks in a row are told once.
+- **What a new letter does** (`act`). `sort` (default): it goes to the Herder in a `letters`
+  turn, quoted under `[Letters, not from the owner]` with the source's sentence. The Herder files
+  each with `letters_file` as `now`, `digest` or `noted` and a reason, tells only the `now` ones,
+  or replies `[quiet]`; unfiled letters are noted. The turn cannot start, steer or end tasks. Once
+  a day after 9:00 the `digest` letters come back for one short digest. `offer` (default for
+  `work`): each letter is a question card 「信箱「x」来了：…要开任务吗？」 with 「开任务」「忽略」;
+  「开任务」 gives the Herder an intake turn with the letter's line. `auto`: first a trial run
+  (`trial`, ADR 0064): offered as above and the Herder says in one line what it would have
+  started; after the owner says 「放开」 the Herder calls `mailbox_change` with `trial: false`,
+  and each letter goes straight to an intake turn (「按你的规则开工（信箱「x」）：…」). The intake
+  turn may start a task; only the repository's name picks a project without asking (ADR 0043).
+- **Timers.** `config.when`: `daily` at `HH:MM` (optional `days`, 1 Monday … 7 Sunday), `every`
+  N hours (1–168), or `once` at `YYYY-MM-DD HH:MM`, in the Mac's local time. At its time the
+  Herder gets a scheduled turn with the timer's sentence as the owner's words: it may answer,
+  start a task or reply `[quiet]`; when the timer's words say when to keep quiet (「没有就不用说」), code asks the model once more, with no tools, whether the reply breaks them, and holds it back on a clear QUIET ([ADR 0102](../adr/0102-code-keeps-what-the-prompt-did-not.md)); a scheduled turn cannot change sources or memory. Times missed
+  while AgentHerd was off run once on start; a `once` timer is removed after it ran. 「现在做一次」
+  runs it without moving the next time.
+- **Adding.** 「每天早上 9 点看看 PI-Desktop 有没有新 issue」「导师来邮件提醒我」「有人请我 review
+  就问我」: `mailbox_add` (kind, name, note, config, `act`, `trial`), `mailbox_try`,
+  `mailbox_list`, `mailbox_change`, `mailbox_remove`; adding, changing and removing only in an
+  owner turn; the Herder restates a timer in one line so the owner can correct it. The app's
+  「信箱」 page does the same (each source has a ✎ button that opens the same form filled in;
+  only what changed is sent, and only a new place to look — repository, feed, words, query —
+  makes a source start over with a first look; a new name, note, interval or time does not),
+  shows each letter's fate and reason, a timer's next run, and below
+  the pull requests tasks opened (「任务开的 PR」, ADR 0051), which are not sources.
+- **Keeping.** Tables `mailbox_sources`, `mailbox_letters` (schema 18; `act`, `trials`, offers in
+  schema 19), last 2,000 letters. Schema 19 moved the old `schedules`, `intake_watches`,
+  `mail_watches` and `social.watch` into sources and dropped them.
 
 ### Source health
 
 A source that stops answering is told once ([ADR 0050](../adr/0050-tell-the-owner-when-a-source-stops.md)).
 
-- `SourceHealth` (`packages/core/src/source-health.ts`) keeps, per source (`github`, `mail`),
+- `SourceHealth` (`packages/core/src/source-health.ts`) keeps, for `github` (pull requests),
   the first failure, the last error and whether the owner was told, in store state
   `sources.health`.
 - After 30 minutes of failures with no success (`sourceDownMinutes`) the owner gets one alarm
   message: which updates stopped and, when the error tells, what to do (`gh auth login`,
   install `gh`, reconnect Gmail). Audit `source.down`. The first success after it is told once
   (「PR 提醒恢复了。」, `source.up`).
-- Removing the last mail watch forgets mail's failures. `session_list` shows failing sources
+- Mailbox sources count their own failures (see Mailbox). `session_list` shows failing sources
   to the Herder.
 - The host passes the system proxy to `gh` as `HTTPS_PROXY`/`HTTP_PROXY` (Windows registry
   Internet Settings, macOS `scutil --proxy`) unless the environment has one
   (`packages/host/src/proxy.ts`).
+- The host's own model requests use the same proxy, carried by the request rather than by the
+  environment (ADR 0098): the Herder's and its tasks' streams, 模型 → 测试 and listing a custom
+  service's models go through `EnvHttpProxyAgent` (`packages/herder/src/model-fetch.ts`), and
+  `NO_PROXY` defaults to keeping `api.deepseek.com` direct. Model requests always bypass a valid
+  proxy for `localhost`, `127.0.0.1` and `[::1]`. Invalid proxy settings return a model or probe
+  error without exposing the proxy URL or retrying the request directly.
 
 ### Message length
 
@@ -568,7 +547,8 @@ Items from different sessions are processed in parallel. The Herder is not on th
 
 From an agent, three things reach the owner
 ([ADR 0056](../adr/0056-leaving-the-mac-asks-and-questions-close.md), which replaced ADR 0029's
-"only a mass delete"): a mass delete (`packages/rules/src/mass-delete.ts`), the owner's
+"only a mass delete"): a mass delete (`packages/rules/src/mass-delete.ts`; never anything inside `/tmp` or the
+system's temporary folder, ADR 0029), the owner's
 `extraGuards` entries, and a step that leaves the Mac (`packages/rules/src/outbound.ts`: push,
 pull-request, merge, comment, publish, deploy, send — git push, gh pr create/merge, gh issue
 comment, npm publish, deploy CLIs, mail, app tools that send). Steps the owner's request asked

@@ -14,6 +14,7 @@ import {
 import { Herder, type HerderModel } from "./herder.ts";
 import { LOGIN_FIELD, loginStream, loginsFor, subscriptionModel } from "./logins.ts";
 import type { LookupOptions } from "./lookup.ts";
+import { modelFetch } from "./model-fetch.ts";
 import type { TierPlacement } from "./model-guide.ts";
 import { fallbackOrder } from "./tools.ts";
 
@@ -167,7 +168,11 @@ export async function testModel(
         { role: "user" as const, content: "Reply with the word OK.", timestamp: Date.now() },
       ],
     };
-    const options = { apiKey: key ?? "none", signal: AbortSignal.timeout(timeoutMs) };
+    const options = {
+      apiKey: key ?? "none",
+      signal: AbortSignal.timeout(timeoutMs),
+      fetch: modelFetch(),
+    };
     const reply =
       stream === undefined
         ? await completeSimple(model, context, options)

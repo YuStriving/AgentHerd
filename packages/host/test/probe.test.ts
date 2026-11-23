@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { modelList, probeModels } from "../src/probe.ts";
 
 type Route = (url: string, headers: Record<string, string>) => Response;
@@ -18,6 +18,17 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 describe("probeModels", () => {
+  it("reports invalid proxy settings without exposing the proxy value", async () => {
+    vi.stubEnv("https_proxy", "not-a-url");
+    try {
+      await expect(probeModels({ baseUrl: "https://relay.example/v1" })).resolves.toEqual({
+        ok: false,
+        message: "Invalid model proxy configuration. Check HTTP_PROXY and HTTPS_PROXY.",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it("lists the models of an OpenAI-compatible service, sorted, with the key as Bearer", async () => {
     const f = fakeFetch(() => json({ object: "list", data: [{ id: "gpt-b" }, { id: "gpt-a" }] }));
     const r = await probeModels({ baseUrl: "https://relay.example/v1/", key: "sk-1", fetch: f.fn });

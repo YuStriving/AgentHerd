@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { applySystemProxy, macProxy, windowsProxy, withSystemProxy } from "../src/proxy.ts";
+import {
+  applySystemProxy,
+  macProxy,
+  NO_PROXY_DEFAULT,
+  windowsProxy,
+  withSystemProxy,
+} from "../src/proxy.ts";
 
 const REG = (enable: string, server: string) => `
 HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings
@@ -44,13 +50,14 @@ describe("system proxy (ADR 0050)", () => {
     };
     expect(withSystemProxy({ HTTPS_PROXY: "http://mine:1" }, "win32", query)).toEqual({
       HTTPS_PROXY: "http://mine:1",
+      NO_PROXY: NO_PROXY_DEFAULT,
     });
     expect(withSystemProxy({ PATH: "p", SystemRoot: "D:\\Win" }, "win32", query)).toEqual({
       PATH: "p",
       SystemRoot: "D:\\Win",
       HTTPS_PROXY: "http://127.0.0.1:7890",
       HTTP_PROXY: "http://127.0.0.1:7890",
-      NO_PROXY: "localhost,127.0.0.1,::1",
+      NO_PROXY: NO_PROXY_DEFAULT,
       NODE_USE_ENV_PROXY: "1",
     });
     expect(asked[0]).toBe("D:\\Win\\System32\\reg.exe");
@@ -76,7 +83,7 @@ describe("system proxy (ADR 0050)", () => {
     expect(mutable).toMatchObject({
       HTTPS_PROXY: "http://127.0.0.1:7890",
       HTTP_PROXY: "http://127.0.0.1:7890",
-      NO_PROXY: "localhost,127.0.0.1,::1",
+      NO_PROXY: NO_PROXY_DEFAULT,
       NODE_USE_ENV_PROXY: "1",
     });
   });

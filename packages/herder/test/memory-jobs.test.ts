@@ -177,7 +177,7 @@ describe("MemoryWorker", () => {
     expect(store.memory.jobs()[0]?.state).toBe("done");
   });
 
-  it("a review keeps only what passes the memory checks", async () => {
+  it("a review keeps only what passes the memory checks (ADR 0101)", async () => {
     const { store, worker, asked } = setup({
       [REVIEW_SYSTEM]: [
         JSON.stringify({
@@ -186,35 +186,110 @@ describe("MemoryWorker", () => {
               action: "add",
               kind: "owner",
               content: "主人希望报告三行以内",
-              evidence: "以后报告三行以内",
+              evidence: "报告三行以内",
             },
+            // A decision lets steps run without asking: only the owner or the Herder keeps one.
             {
               action: "add",
-              kind: "owner",
-              content: "主人关心 pi-desktop",
+              kind: "decision",
+              content: "pi-desktop 不开 PR",
               evidence: "看下 pi-desktop",
             },
             { action: "add", kind: "person", content: "小王负责前端", evidence: "小王是我们前端" },
             { action: "add", kind: "project", content: "演示在 /tmp/demo", evidence: "/tmp/demo" },
+            { action: "add", kind: "owner", content: "没有依据的猜测" },
           ],
         }),
       ],
     });
-    store.addHerderTurn("owner", "以后报告三行以内。看下 pi-desktop");
+    store.addHerderTurn("owner", "报告三行以内。看下 pi-desktop");
     store.addHerderTurn("herder", "好的，小王是我们前端吗？");
     store.addHerderTurn("owner", "小王是我们前端");
     store.addHerderTurn("answer", "/tmp/demo");
     store.memory.enqueueJob(REVIEW_JOB, { afterId: 0 });
     await worker.drain();
     expect(asked[0]?.user).toContain("[owner tapped] /tmp/demo");
+    expect(asked[0]?.user).toContain("[secretary] 好的，小王是我们前端吗？");
     expect(
       store.memory
         .list()
         .map((r) => r.abstract)
         .sort(),
     ).toEqual(["主人希望报告三行以内", "小王负责前端"]);
+    expect(store.memory.list().every((r) => r.source === "review")).toBe(true);
     expect(store.memory.lastLog("review.done")?.ref).toBe("4");
-    expect(store.memory.logs().filter((l) => l.kind === "review.dropped")).toHaveLength(2);
+    expect(store.memory.logs().filter((l) => l.kind === "review.dropped")).toHaveLength(3);
+  });
+
+  it("keeps the lesson of a correction, from the secretary's side (ADR 0101)", async () => {
+    const lesson = "推荐 issue 前，开着的和被关掉的 PR 都要看";
+    const { store, worker, asked } = setup({
+      [REVIEW_SYSTEM]: [
+        JSON.stringify({
+          operations: [
+            {
+              action: "add",
+              kind: "experience",
+              content: lesson,
+              evidence: "主人指出 #2391 其实有被拒的 PR，我只看了开着的",
+            },
+          ],
+        }),
+      ],
+    });
+    store.addHerderTurn("herder", "#2391 和 #2426 都还没人接，适合上手");
+    store.addHerderTurn("owner", "这个忽略吧，这个 issue 里面其实有 pr，只不过被拒绝了");
+    store.addHerderTurn("herder", "明白，下次我连被关掉的 PR 也看");
+    store.memory.enqueueJob(REVIEW_JOB, { afterId: 0 });
+    await worker.drain();
+    expect(asked[0]?.system).toBe(REVIEW_SYSTEM);
+    expect(store.memory.list({ kinds: ["experience"] }).map((r) => r.abstract)).toEqual([lesson]);
+  });
+
+  it("one topic, one entry: a changed fact replaces the kept one (ADR 0101)", async () => {
+    const store0 = Store.open(":memory:");
+    store0.memory.write([{ op: "add", kind: "owner", abstract: "主人希望报告用英文" }], {
+      actor: "herder",
+      source: "said",
+    });
+    const [kept] = store0.memory.list();
+    if (kept === undefined) throw new Error("nothing kept");
+    const m = model({
+      [REVIEW_SYSTEM]: [
+        JSON.stringify({
+          operations: [
+            {
+              action: "replace",
+              id: kept.id.slice(0, 8),
+              content: "主人希望报告用中文",
+              evidence: "报告还是用中文吧",
+            },
+            // The same words again are not a second entry.
+            {
+              action: "add",
+              kind: "owner",
+              content: "主人希望报告用中文",
+              evidence: "报告还是用中文吧",
+            },
+          ],
+        }),
+      ],
+    });
+    const worker = new MemoryWorker({
+      memory: store0.memory,
+      transcript: (id) => store0.transcript(id),
+      herderTurnsAfter: (id, n) => store0.herderTurnsAfter(id, n),
+      complete: m.complete,
+    });
+    store0.addHerderTurn("owner", "报告还是用中文吧");
+    store0.memory.enqueueJob(REVIEW_JOB, { afterId: 0 });
+    await worker.drain();
+    // The review was shown what is kept on the topic, with its id.
+    expect(m.asked[0]?.user).toContain(kept.id.slice(0, 8));
+    expect(store0.memory.list().map((r) => r.abstract)).toEqual(["主人希望报告用中文"]);
+    expect(
+      store0.memory.logs().some((l) => l.kind === "review.dropped" && /already kept/.test(l.text)),
+    ).toBe(true);
   });
 });
 

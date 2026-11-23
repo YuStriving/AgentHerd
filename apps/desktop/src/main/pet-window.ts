@@ -32,6 +32,11 @@ interface Corner {
   bottom: number;
   /** Tucked at this screen edge: dropped there with a third of it past the edge. */
   edge?: Edge;
+  /**
+   * Tucked in the edge grip rather than as a strip: kept so a restart places it there at once
+   * instead of showing the strip until the pet reports its figure.
+   */
+  grip?: true;
 }
 
 /** Where the pet floats (ADR 0080): from the settings. */
@@ -91,6 +96,7 @@ export class PetWindow {
   private hitTimer: ReturnType<typeof setInterval> | undefined;
   private pendingSize: { width: number; height: number; regions?: PetRegion[] } | undefined;
   private regions: PetRegion[] | undefined;
+  private gripHits: PetRegion[] | undefined;
   private interacting = false;
   private ignoringMouse: boolean | undefined;
   private size = { ...START };
@@ -101,6 +107,12 @@ export class PetWindow {
   private anchor: Corner | undefined;
   /** The screen edge the figure is tucked at; it peeks out while the cursor is on it. */
   private edge: Edge | undefined;
+  private grip = false;
+  /** The pose was told since the pet opened. */
+  private posed = false;
+  private hover = false;
+  private panel = false;
+  private releaseCursor?: { x: number; y: number };
   private peeking = false;
   private peekTimer: ReturnType<typeof setTimeout> | undefined;
   /** The renderer has something for the owner: float even when on top is "busy". */
@@ -118,7 +130,6 @@ export class PetWindow {
       const cursor = screen.getCursorScreenPoint();
       const b = w.getBounds();
       // Dragged away from its edge: it is not tucked any more until dropped at one again.
-      this.edge = undefined;
       this.dragFrom = {
         cursorX: cursor.x,
         cursorY: cursor.y,
@@ -144,12 +155,16 @@ export class PetWindow {
       this.stepDragWith(w, d);
       if (d.moved && this.anchor !== undefined) {
         this.tuckIfPastEdge(d.push);
-        this.saveCorner({
-          ...this.anchor,
-          ...(this.edge === undefined ? {} : { edge: this.edge }),
-        });
+        if (this.grip && this.edge) {
+          clearTimeout(this.peekTimer);
+          this.peekTimer = undefined;
+          this.releaseCursor = this.hover ? screen.getCursorScreenPoint() : undefined;
+          this.peeking = this.panel;
+        }
+        this.saveCorner(this.anchor);
         this.place(w);
       }
+      this.syncHitPolling(w);
       if (this.pendingSize !== undefined) {
         const { width, height, regions } = this.pendingSize;
         this.pendingSize = undefined;
@@ -157,37 +172,68 @@ export class PetWindow {
         this.applySize(w, width, height);
       }
       this.updateHitTest();
+      if (d.moved) this.tellPose(w, true);
       return d.moved;
     });
-    ipcMain.on("pet:resize", (e, width: unknown, height: unknown, rawRegions?: unknown) => {
-      const w = this.own(e);
-      if (w === undefined || typeof width !== "number" || typeof height !== "number") return;
-      const regions = parseRegions(rawRegions);
-      if (this.dragFrom !== undefined) {
-        if (regions !== undefined) this.regions = regions;
-        if (Math.ceil(width) !== this.size.width || Math.ceil(height) !== this.size.height) {
-          this.pendingSize = {
-            width,
-            height,
-            ...(regions === undefined ? {} : { regions }),
-          };
+    ipcMain.on(
+      "pet:resize",
+      (e, width: unknown, height: unknown, rawRegions?: unknown, rawHits?: unknown) => {
+        const w = this.own(e);
+        if (w === undefined || typeof width !== "number" || typeof height !== "number") return;
+        const regions = parseRegions(rawRegions);
+        this.gripHits = parseRegions(rawHits);
+        if (this.dragFrom !== undefined) {
+          if (regions !== undefined) this.regions = regions;
+          if (Math.ceil(width) !== this.size.width || Math.ceil(height) !== this.size.height) {
+            this.pendingSize = {
+              width,
+              height,
+              ...(regions === undefined ? {} : { regions }),
+            };
+          }
+          return;
         }
-        return;
-      }
-      if (regions !== undefined) this.regions = regions;
-      this.applySize(w, width, height);
-      this.updateHitTest();
-    });
+        if (regions !== undefined) this.regions = regions;
+        this.applySize(w, width, height);
+        this.updateHitTest();
+      },
+    );
     ipcMain.on("pet:interacting", (e, active: unknown) => {
       if (this.own(e) === undefined || typeof active !== "boolean") return;
       this.interacting = active;
       this.updateHitTest();
     });
     // The cursor is on the figure, or its panel is open: a tucked figure comes out.
-    ipcMain.on("pet:peek", (e, on: unknown) => {
+    ipcMain.on("pet:peek", (e, state: unknown) => {
+      if (
+        !state ||
+        typeof state !== "object" ||
+        !("hover" in state) ||
+        !("panel" in state) ||
+        !("grip" in state)
+      )
+        return;
+      const { hover: on, panel, grip } = state;
       const w = this.own(e);
       if (w === undefined || typeof on !== "boolean") return;
-      this.setPeek(w, on);
+      const changed = this.grip !== (grip === true);
+      this.grip = grip === true;
+      this.hover = on;
+      const panelChanged = this.panel !== (panel === true);
+      this.panel = panel === true;
+      if (!this.grip) this.releaseCursor = undefined;
+      if (!on) this.observeLeave(screen.getCursorScreenPoint());
+      this.setPeek(w, this.panel || (on && !this.releaseCursor));
+      if (panelChanged && this.grip) this.place(w);
+      if (changed) {
+        this.syncHitPolling(w);
+        // Tucked already: the next start shows the same tuck at once.
+        if (this.edge !== undefined && this.anchor !== undefined) this.saveCorner(this.anchor);
+        this.place(w);
+        this.tellPose(w);
+      } else if (!this.posed) this.tellPose(w);
+      // The first report shows the renderer listens: a pose sent before it could be lost.
+      this.posed = true;
     });
     // Something waits for the owner, or the panel is open: float above other windows.
     ipcMain.on("pet:float", (e, on: unknown) => {
@@ -195,6 +241,10 @@ export class PetWindow {
       if (w === undefined || typeof on !== "boolean" || on === this.wantTop) return;
       this.wantTop = on;
       this.applyPlacement(w);
+    });
+    ipcMain.on("pet:focus", (e) => {
+      const w = this.own(e);
+      if (w !== undefined) this.focus(w);
     });
     ipcMain.on("pet:open-app", (e, taskId: unknown) => {
       if (this.own(e) === undefined) return;
@@ -227,18 +277,23 @@ export class PetWindow {
 
   /**
    * Opens the pet's panel on a page and gives it the keyboard: a notification or the menu bar
-   * asked (ADR 0079). False when the pet is not shown.
+   * asked (ADR 0079). The talk shortcut can also close the panel on that page.
+   * False when the pet is not shown.
    */
-  show(tab: "chat" | "tasks" | "cards"): boolean {
+  show(tab: "chat" | "tasks" | "cards", toggle = false): boolean {
     const w = this.win;
     if (w === undefined || w.isDestroyed()) return false;
-    const tell = () => w.webContents.send("pet:show", tab);
+    const tell = () => w.webContents.send("pet:show", tab, toggle);
     if (w.webContents.isLoading()) w.webContents.once("did-finish-load", tell);
     else tell();
+    if (!toggle) this.focus(w);
+    return true;
+  }
+
+  private focus(w: BrowserWindow): void {
     w.show();
     w.focus();
     if (process.platform === "darwin") app.focus({ steal: true });
-    return true;
   }
 
   /** On top always or only while busy, and over full-screen apps or not (ADR 0080). */
@@ -255,6 +310,15 @@ export class PetWindow {
     w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: this.placement.overFullscreen });
   }
 
+  private tellPose(w: BrowserWindow, animate = false): void {
+    const tucked = this.grip && this.edge !== undefined && !this.peeking;
+    w.webContents.send("pet:pose", {
+      side: this.edge ?? null,
+      pose: tucked ? "grip" : "full",
+      animate: tucked && animate,
+    });
+  }
+
   private setPeek(w: BrowserWindow, on: boolean): void {
     if (this.peekTimer !== undefined) {
       clearTimeout(this.peekTimer);
@@ -264,13 +328,17 @@ export class PetWindow {
       if (this.peeking) return;
       this.peeking = true;
       this.place(w);
+      this.tellPose(w);
       return;
     }
     if (!this.peeking) return;
     this.peekTimer = setTimeout(() => {
       this.peekTimer = undefined;
       this.peeking = false;
-      if (!w.isDestroyed()) this.place(w);
+      if (!w.isDestroyed()) {
+        this.place(w);
+        this.tellPose(w, true);
+      }
     }, UNPEEK_MS);
   }
 
@@ -292,7 +360,9 @@ export class PetWindow {
     const edge = pushedEdge(push, figure.width) ?? edgeOf(figure, area);
     if (edge === undefined) return;
     this.edge = edge;
-    this.anchor = { ...this.anchor, right: peekRight(edge, stage, this.size.width, area) };
+    // Keep the saved corner on the display where the drag ended.
+    const right = Math.min(peekRight(edge, stage, this.size.width, area), area.x + area.width);
+    this.anchor = { ...this.anchor, right };
   }
 
   /** Puts the window where its corner, size and tuck say. */
@@ -341,6 +411,10 @@ export class PetWindow {
       ...size,
     };
     const stage = this.regions?.[0];
+    if (this.grip && this.edge && !this.panel) {
+      bounds.x = this.edge === "right" ? area.x + area.width - size.width : area.x;
+      return bounds;
+    }
     if (this.edge === undefined || this.peeking || stage === undefined) return bounds;
     // Tucked: only a strip of the figure shows at the edge.
     bounds.x = tuckedX(this.edge, stage, area);
@@ -373,7 +447,7 @@ export class PetWindow {
   }
 
   private setIgnore(w: BrowserWindow, ignore: boolean): void {
-    if (process.platform !== "win32" || this.ignoringMouse === ignore) return;
+    if (this.ignoringMouse === ignore) return;
     const wasInteractive = this.ignoringMouse === false;
     this.ignoringMouse = ignore;
     w.setIgnoreMouseEvents(ignore);
@@ -382,8 +456,31 @@ export class PetWindow {
     }
   }
 
+  /** Holding a screen edge in the grip pose. */
+  private gripping(): boolean {
+    return this.grip && this.edge !== undefined;
+  }
+
+  /**
+   * Off Windows the window takes every click, except in the edge grip: there its clear margins
+   * must pass clicks through, so the hit test polls as it does on Windows. Only while gripping,
+   * so a figure away from the edges keeps the plain behaviour.
+   */
+  private syncHitPolling(w: BrowserWindow): void {
+    if (process.platform === "win32") return;
+    const want = this.gripping();
+    if (want === (this.hitTimer !== undefined)) return;
+    if (want) {
+      this.hitTimer = setInterval(() => this.updateHitTest(), 25);
+      this.updateHitTest();
+    } else {
+      this.stopHitTimer();
+      if (!w.isDestroyed()) this.setIgnore(w, false);
+    }
+  }
+
   private updateHitTest(): void {
-    if (process.platform !== "win32") return;
+    if (process.platform !== "win32" && !this.gripping()) return;
     const w = this.win;
     if (w === undefined || w.isDestroyed()) return;
     if (this.dragFrom !== undefined || this.interacting) {
@@ -396,8 +493,23 @@ export class PetWindow {
     }
     const cursor = screen.getCursorScreenPoint();
     const b = this.lastPlaced ?? w.getBounds();
-    const hit = hitPetRegion(cursor.x - b.x, cursor.y - b.y, this.size, this.regions);
+    const hit = hitPetRegion(
+      cursor.x - b.x,
+      cursor.y - b.y,
+      this.size,
+      this.gripHits ?? this.regions,
+    );
+    if (!hit) this.observeLeave(cursor);
     this.setIgnore(w, !hit);
+  }
+
+  // Changing sprites under a stationary pointer can generate a synthetic leave and enter.
+  private observeLeave(cursor: { x: number; y: number }): void {
+    if (
+      this.releaseCursor &&
+      (cursor.x !== this.releaseCursor.x || cursor.y !== this.releaseCursor.y)
+    )
+      this.releaseCursor = undefined;
   }
 
   private stepDrag(): void {
@@ -412,6 +524,11 @@ export class PetWindow {
     const dx = cursor.x - d.cursorX;
     const dy = cursor.y - d.cursorY;
     if (!d.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+    if (!d.moved && this.edge !== undefined) {
+      this.edge = undefined;
+      this.syncHitPolling(w);
+      this.tellPose(w);
+    }
     d.moved = true;
     const rawX = Math.round(d.x + dx);
     // The whole pet (the panel too) stays inside the work area of the screen under the pointer,
@@ -469,17 +586,33 @@ export class PetWindow {
     if (this.win !== undefined && !this.win.isDestroyed()) return;
     const corner = this.corner();
     this.anchor = { right: corner.right, bottom: corner.bottom };
+    this.gripHits = undefined;
     this.edge = corner.edge;
+    // A pet left in the edge grip starts in it; the renderer corrects this if it cannot grip.
+    this.grip = corner.grip === true && corner.edge !== undefined;
+    this.hover = this.panel = this.posed = false;
+    this.releaseCursor = undefined;
     this.peeking = false;
     this.wantTop = false;
     this.size = { ...START };
-    this.lastPlaced = { x: corner.right - START.width, y: corner.bottom - START.height };
     this.regions = undefined;
     this.interacting = false;
     this.ignoringMouse = undefined;
-    const created = new BrowserWindow({
-      x: corner.right - START.width,
+    const area = screen.getDisplayNearestPoint({
+      x: corner.right - 1,
+      y: corner.bottom - 1,
+    }).workArea;
+    const start = {
+      x: !this.gripping()
+        ? corner.right - START.width
+        : this.edge === "right"
+          ? area.x + area.width - START.width
+          : area.x,
       y: corner.bottom - START.height,
+    };
+    this.lastPlaced = start;
+    const created = new BrowserWindow({
+      ...start,
       ...START,
       show: false,
       frame: false,
@@ -508,7 +641,7 @@ export class PetWindow {
     if (process.platform === "win32") {
       this.setIgnore(created, true);
       this.hitTimer = setInterval(() => this.updateHitTest(), 25);
-    }
+    } else this.syncHitPolling(created);
     created.on("blur", () => {
       if (this.dragFrom === undefined) {
         this.interacting = false;
@@ -555,6 +688,8 @@ export class PetWindow {
     created.webContents.on("did-finish-load", () => {
       this.lastRoom = undefined;
       this.tellRoom(created);
+      // A reloaded pet forgot its pose: tell it again on its first report.
+      this.posed = false;
     });
     if (this.opts.devUrl !== undefined)
       void created.loadURL(new URL("pet.html", this.opts.devUrl).href);
@@ -586,7 +721,10 @@ export class PetWindow {
     try {
       const saved = JSON.parse(readFileSync(this.file(), "utf8")) as Corner;
       if (typeof saved.right === "number" && typeof saved.bottom === "number") {
-        const area = screen.getDisplayNearestPoint({ x: saved.right, y: saved.bottom }).workArea;
+        const area = screen.getDisplayNearestPoint({
+          x: saved.right - 1,
+          y: saved.bottom - 1,
+        }).workArea;
         const inside =
           saved.right > area.x + MIN &&
           saved.right <= area.x + area.width + MIN &&
@@ -598,6 +736,7 @@ export class PetWindow {
             right: saved.right,
             bottom: saved.bottom,
             ...(edge === undefined ? {} : { edge }),
+            ...(edge !== undefined && saved.grip === true ? { grip: true as const } : {}),
           };
       }
     } catch {
@@ -607,7 +746,14 @@ export class PetWindow {
     return { right: area.x + area.width - MARGIN, bottom: area.y + area.height - MARGIN };
   }
 
-  private saveCorner(corner: Corner): void {
+  /** Saves the corner with the current tuck. */
+  private saveCorner(anchor: Corner): void {
+    const corner: Corner = {
+      right: anchor.right,
+      bottom: anchor.bottom,
+      ...(this.edge === undefined ? {} : { edge: this.edge }),
+      ...(this.gripping() ? { grip: true as const } : {}),
+    };
     try {
       const file = this.file();
       if (!existsSync(dirname(file))) mkdirSync(dirname(file), { recursive: true });

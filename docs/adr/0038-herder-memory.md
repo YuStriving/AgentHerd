@@ -1,6 +1,6 @@
 # ADR 0038: The Herder has a long-term memory in herd.db
 
-- Status: Accepted
+- Status: Accepted; changed by [0101](0101-memory-comes-with-each-turn.md) (memory comes with each turn, not the system prompt)
 - Date: 2026-11-06
 
 ## Context

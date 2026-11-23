@@ -13,8 +13,8 @@ import type {
   HerderTurnRole,
 } from "./herder-port.ts";
 import { HERDER_REQUESTS_READ_MAX, HerderStore } from "./herder-store.ts";
+import { MailboxStore, moveWatchesIntoMailbox } from "./mailbox-store.ts";
 import { ftsQuery, MEMORY_TABLES_SQL, MemoryStore } from "./memory-store.ts";
-import type { Schedule } from "./schedules.ts";
 import {
   type AuditRow,
   type DecisionRow,
@@ -35,6 +35,8 @@ import {
   LATEST_SCHEMA_VERSION,
   LEGACY_HERDER_STATE_KEY,
   MAIL_WATCHES_TABLE_SQL,
+  MAILBOX_TABLES_SQL,
+  MAILBOX_V19_COLUMNS,
   MESSAGE_TASKS_TABLE_SQL,
   OUTBOX_TABLE_SQL,
   OWNER_CARDS_TABLE_SQL,
@@ -79,6 +81,8 @@ export class Store {
   readonly memory: MemoryStore;
   /** The Herder's conversation and context (ADR 0095). */
   readonly herder: HerderStore;
+  /** The Herder's mailbox (ADR 0099). */
+  readonly mailbox: MailboxStore;
 
   private readonly stmtUpsertSession: StatementSync;
   private readonly stmtGetSession: StatementSync;
@@ -122,6 +126,7 @@ export class Store {
     }
     this.memory = new MemoryStore(this.db, this.secrets);
     this.herder = new HerderStore(this.db);
+    this.mailbox = new MailboxStore(this.db);
     this.stmtUpsertSession = this.db.prepare(
       "INSERT OR REPLACE INTO sessions(id, profile_id, cwd, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
     );
@@ -581,60 +586,6 @@ export class Store {
     this.db.prepare("DELETE FROM pr_watches WHERE key = ?").run(prKey(watch));
   }
 
-  saveMailWatch(watch: MailWatch): void {
-    this.db
-      .prepare("INSERT OR REPLACE INTO mail_watches(id, data_json, created_at) VALUES (?, ?, ?)")
-      .run(watch.id, JSON.stringify(watch), watch.createdAt);
-  }
-
-  /** Mail watches the owner asked for, oldest first. */
-  mailWatches(): MailWatch[] {
-    return this.db
-      .prepare("SELECT data_json FROM mail_watches ORDER BY created_at, id")
-      .all()
-      .map((r) => JSON.parse(String(r.data_json)) as MailWatch);
-  }
-
-  deleteMailWatch(id: string): void {
-    this.db.prepare("DELETE FROM mail_watches WHERE id = ?").run(id);
-  }
-
-  saveIntakeWatch(watch: IntakeWatch): void {
-    this.db
-      .prepare("INSERT OR REPLACE INTO intake_watches(id, data_json, created_at) VALUES (?, ?, ?)")
-      .run(watch.id, JSON.stringify(watch), watch.createdAt);
-  }
-
-  /** New-work watches the owner asked for, oldest first (ADR 0052). */
-  intakeWatches(): IntakeWatch[] {
-    return this.db
-      .prepare("SELECT data_json FROM intake_watches ORDER BY created_at, id")
-      .all()
-      .map((r) => JSON.parse(String(r.data_json)) as IntakeWatch);
-  }
-
-  deleteIntakeWatch(id: string): void {
-    this.db.prepare("DELETE FROM intake_watches WHERE id = ?").run(id);
-  }
-
-  saveSchedule(schedule: Schedule): void {
-    this.db
-      .prepare("INSERT OR REPLACE INTO schedules(id, data_json, created_at) VALUES (?, ?, ?)")
-      .run(schedule.id, JSON.stringify(schedule), schedule.createdAt);
-  }
-
-  /** What the Herder does at set times (ADR 0055), oldest first. */
-  schedules(): Schedule[] {
-    return this.db
-      .prepare("SELECT data_json FROM schedules ORDER BY created_at, id")
-      .all()
-      .map((r) => JSON.parse(String(r.data_json)) as Schedule);
-  }
-
-  deleteSchedule(id: string): void {
-    this.db.prepare("DELETE FROM schedules WHERE id = ?").run(id);
-  }
-
   /** The channel took the message, or it was given up. */
   deleteOutbox(id: string): void {
     this.db.prepare("DELETE FROM outbox WHERE id = ?").run(id);
@@ -804,6 +755,21 @@ export class Store {
         new HerderStore(this.db).migrate(HERDER_TABLES_SQL);
         this.db.prepare("UPDATE schema_version SET version = ?").run(17);
       }
+      if (version < 18) {
+        this.db.exec(MAILBOX_TABLES_SQL);
+        this.db.prepare("UPDATE schema_version SET version = ?").run(18);
+      }
+      if (version < 19) {
+        // A database made at version 18 or later already has the tables; add only what is missing.
+        for (const [table, column, def] of MAILBOX_V19_COLUMNS) {
+          const has = (
+            this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
+          ).some((c) => c.name === column);
+          if (!has) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+        }
+        moveWatchesIntoMailbox(this.db, new Date().toISOString());
+        this.db.prepare("UPDATE schema_version SET version = ?").run(19);
+      }
     }
   }
 
@@ -865,57 +831,6 @@ export interface OutboxRow {
   createdAt: string;
   /** The last send error. */
   error?: string;
-}
-
-/** Mail the owner asked to be told about (docs/spec/04-herder.md "Mail"). */
-/** New work on GitHub the owner asked to be offered (ADR 0052). */
-export interface IntakeWatch {
-  id: string;
-  /** Issues assigned to the owner, or pull requests waiting for their review. */
-  kind: "issues" | "reviews";
-  /** `owner/name`; every repository when missing. */
-  repo?: string;
-  label?: string;
-  /** What the owner wants to hear about, in their words. */
-  about: string;
-  /** New items start a task without asking: the owner said so. */
-  auto: boolean;
-  /**
-   * An automatic watch still on its trial run (ADR 0064): new items are offered as usual and the
-   * Herder only says what it would have started, until the owner lets it start work.
-   */
-  trial?: boolean;
-  /** Items the trial run has handled so far. */
-  trials?: number;
-  createdAt: string;
-  /** Urls of items already seen, newest last. */
-  seen: string[];
-  /** Items offered with 「开任务 / 忽略」 the owner has not answered yet. */
-  offers: IntakeOffer[];
-  /** The owner paused it in the app: kept, but not looked at (ADR 0058). */
-  paused?: boolean;
-}
-
-export interface IntakeOffer {
-  id: string;
-  item: { kind: "issues" | "reviews"; repo: string; number: number; title: string; url: string };
-  /** The offer's message, to take its buttons away once answered. */
-  ref?: MessageRef;
-  /** Its number in the watch's trial run, shown on the card (ADR 0064). */
-  trial?: number;
-}
-
-export interface MailWatch {
-  id: string;
-  /** What the owner wants to hear about, in their words, e.g. "导师的邮件". */
-  about: string;
-  /** A Gmail search, e.g. `from:prof@uni.edu`. */
-  query: string;
-  createdAt: string;
-  /** Ids of messages already told, newest last. */
-  seen: string[];
-  /** The owner paused it in the app: kept, but not looked at (ADR 0058). */
-  paused?: boolean;
 }
 
 /** A task as saved in herd.db (ADR 0039). */

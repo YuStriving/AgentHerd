@@ -4,7 +4,7 @@ import {
   Bot,
   Boxes,
   Brain,
-  CalendarClock,
+  Inbox,
   ListTodo,
   Loader2,
   type LucideIcon,
@@ -21,9 +21,9 @@ import { FirstRun } from "./firstrun/FirstRun";
 import { AgentsPage } from "./pages/AgentsPage";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
 import { HerdersPage } from "./pages/HerdersPage";
+import { MailboxPage } from "./pages/MailboxPage";
 import { MemoryPage } from "./pages/MemoryPage";
 import { ModelsPage } from "./pages/ModelsPage";
-import { SchedulesPage } from "./pages/SchedulesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TasksPage } from "./pages/TasksPage";
 import { isMac } from "./platform";
@@ -33,7 +33,7 @@ const NAV: { page: Page; label: string; icon: LucideIcon }[] = [
   { page: "tasks", label: "任务", icon: ListTodo },
   { page: "herders", label: "主管", icon: Bot },
   { page: "memory", label: "记忆", icon: Brain },
-  { page: "schedules", label: "定时任务", icon: CalendarClock },
+  { page: "mailbox", label: "信箱", icon: Inbox },
   { page: "connections", label: "应用连接", icon: Plug },
   { page: "models", label: "模型", icon: Boxes },
   { page: "agents", label: "Agent", icon: SquareTerminal },
@@ -50,9 +50,9 @@ const HEADERS: Record<Page, { title: string; hint: string }> = {
     title: "记忆",
     hint: "主管长期记住的事；不对就改掉或忘掉，飞书里也能用 /记忆 查看",
   },
-  schedules: {
-    title: "定时任务",
-    hint: "主管按时去做的事和在盯的东西；在飞书里跟主管说就能加，这里可以暂停或删除",
+  mailbox: {
+    title: "信箱",
+    hint: "外面来的消息和定时要做的事都在这里，主管看过再决定马上告诉你、早上汇总还是记下；跟主管说就能加",
   },
   connections: {
     title: "应用连接",
@@ -153,8 +153,8 @@ function PageBody({ page }: { page: Page }) {
       return <HerdersPage />;
     case "memory":
       return <MemoryPage />;
-    case "schedules":
-      return <SchedulesPage />;
+    case "mailbox":
+      return <MailboxPage />;
     case "connections":
       return <ConnectionsPage />;
     case "agents":

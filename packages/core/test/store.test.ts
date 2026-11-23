@@ -6,7 +6,13 @@ import type { Decision, Item, ReportView, Rule } from "@agentherd/protocol";
 import { describe, expect, it } from "vitest";
 import type { SessionRow } from "../src/index.ts";
 import { HERDER_PROMPTS_KEEP, OWNER_CARDS_KEEP, Store } from "../src/index.ts";
-import { HERDER_LOG_TABLE_SQL, HERDER_REQUESTS_V16_SQL } from "../src/store-schema.ts";
+import {
+  HERDER_LOG_TABLE_SQL,
+  HERDER_REQUESTS_V16_SQL,
+  INTAKE_WATCHES_TABLE_SQL,
+  MAIL_WATCHES_TABLE_SQL,
+  SCHEDULES_TABLE_SQL,
+} from "../src/store-schema.ts";
 
 const NOW = "2026-11-04T00:00:00.000Z";
 const REDACTED = "«redacted»";
@@ -788,5 +794,122 @@ describe("Store (the Herder's conversation in herd.db, ADR 0095)", () => {
     expect(store.herder.prompt()?.hash).toBe(`p${HERDER_PROMPTS_KEEP + 4}`);
     expect(store.herder.prompt("h1")).toBeUndefined();
     store.close();
+  });
+});
+
+describe("Store (watches and schedules move into the mailbox, ADR 0100)", () => {
+  it("turns a version-18 database's schedules, work and mail watches and 小红书 notices into sources", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentherd-core-"));
+    const dbPath = join(dir, "herd.db");
+    const first = Store.open(dbPath);
+    first.close();
+
+    const raw = new DatabaseSync(dbPath);
+    raw.exec(SCHEDULES_TABLE_SQL);
+    raw.exec(INTAKE_WATCHES_TABLE_SQL);
+    raw.exec(MAIL_WATCHES_TABLE_SQL);
+    const put = (table: string, id: string, data: unknown) =>
+      raw
+        .prepare(`INSERT INTO ${table}(id, data_json, created_at) VALUES (?, ?, ?)`)
+        .run(id, JSON.stringify(data), NOW);
+    put("schedules", "s1", {
+      id: "s1",
+      about: "早上看 PI-Desktop 新 issue",
+      prompt: "看看 PI-Desktop 昨晚有没有新 issue",
+      when: { kind: "daily", at: "09:00" },
+      paused: false,
+      createdAt: NOW,
+      nextAt: "2026-11-05T01:00:00.000Z",
+    });
+    put("intake_watches", "w1", {
+      id: "w1",
+      kind: "issues",
+      repo: "zszz3/AgentHerd",
+      about: "派给我的 AgentHerd issue",
+      auto: true,
+      trial: true,
+      trials: 2,
+      createdAt: NOW,
+      seen: ["https://github.com/a/1", "https://github.com/a/2"],
+    });
+    put("mail_watches", "m1", {
+      id: "m1",
+      about: "银行的账单",
+      query: "from:bank",
+      createdAt: NOW,
+      seen: ["x1"],
+      paused: true,
+    });
+    raw.prepare("INSERT OR REPLACE INTO state(key, value_json, updated_at) VALUES (?, ?, ?)").run(
+      "social.watch",
+      JSON.stringify({
+        xiaohongshu: { watch: { mentions: true }, seen: { mentions: ["n1"] } },
+        zhihu: { watch: { mentions: false } },
+      }),
+      NOW,
+    );
+    raw.exec("UPDATE schema_version SET version = 18");
+    raw.close();
+
+    const store = Store.open(dbPath);
+    const sources = store.mailbox.sources();
+    expect(
+      sources.map((s) => [s.id, s.kind, s.name, s.act, s.everyMinutes, s.paused, s.config]),
+    ).toEqual(
+      expect.arrayContaining([
+        [
+          "s1",
+          "timer",
+          "早上看 PI-Desktop 新 issue",
+          "sort",
+          0,
+          false,
+          { when: { kind: "daily", at: "09:00" } },
+        ],
+        [
+          "w1",
+          "work",
+          "派给我的 AgentHerd issue",
+          "trial",
+          5,
+          false,
+          { what: ["assigned"], repo: "zszz3/AgentHerd" },
+        ],
+        ["m1", "mail", "银行的账单", "sort", 5, true, { query: "from:bank" }],
+        [
+          "social-xiaohongshu",
+          "social",
+          "小红书的评论和@",
+          "sort",
+          20,
+          false,
+          { platform: "xiaohongshu" },
+        ],
+      ]),
+    );
+    expect(sources).toHaveLength(4);
+    expect(store.mailbox.source("s1")?.note).toBe("看看 PI-Desktop 昨晚有没有新 issue");
+    expect(store.mailbox.source("w1")?.trials).toBe(2);
+    expect(store.mailbox.memory("s1").state).toEqual({ nextAt: "2026-11-05T01:00:00.000Z" });
+    // Newest first, as the mailbox keeps them.
+    expect(store.mailbox.memory("w1").seen).toEqual([
+      "https://github.com/a/2",
+      "https://github.com/a/1",
+    ]);
+    expect(store.mailbox.memory("social-xiaohongshu").seen).toEqual(["n1"]);
+    expect(store.getState("social.watch")).toBeUndefined();
+    store.close();
+
+    const check = new DatabaseSync(dbPath);
+    const tables = (
+      check.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
+        name: string;
+      }[]
+    ).map((t) => t.name);
+    check.close();
+    expect(tables).not.toContain("schedules");
+    expect(tables).not.toContain("intake_watches");
+    expect(tables).not.toContain("mail_watches");
+    expect(readdirSync(dir).some((f) => f.startsWith("herd.db.v18-"))).toBe(true);
   });
 });
